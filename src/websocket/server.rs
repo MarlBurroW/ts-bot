@@ -39,6 +39,8 @@ struct AppState {
     bot_nickname: String,
     /// TS3 server address (from config)
     ts3_server: String,
+    /// Shared flag to stop TTS playback remotely
+    tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Run the WebSocket server
@@ -50,6 +52,7 @@ pub async fn run_server(
     event_broadcaster: broadcast::Sender<WebSocketEvent>,
     tts_tx: Option<tokio::sync::mpsc::Sender<TtsRequest>>,
     ts3_handle: SharedTs3Handle,
+    tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -61,6 +64,7 @@ pub async fn run_server(
         ts3_handle,
         bot_nickname: config.ts3_nickname.clone(),
         ts3_server: config.ts3_server.clone(),
+        tts_stop_flag,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -133,6 +137,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Handle incoming messages from WebSocket
     let event_tx = state.event_broadcaster.clone();
     let tts_tx = state.tts_tx.clone();
+    let tts_stop_flag = state.tts_stop_flag.clone();
     let ts3_handle = state.ts3_handle.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
@@ -180,10 +185,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                         CommandAction::StopSpeaking => {
-                            // StopSpeaking is handled by the AudioPlayer in main.rs
-                            // We send a special event that main.rs listens for
-                            // For now, the stop is immediate via the CommandAction
-                            // TODO: wire stop through a dedicated channel if needed
+                            if let Some(ref flag) = tts_stop_flag {
+                                let flag: &std::sync::atomic::AtomicBool = flag.as_ref();
+                                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                info!("TTS playback stopped via WebSocket command");
+                            }
                         }
                         CommandAction::GetServerState { command_id } => {
                             let mut handle_guard = ts3_handle.lock().await;

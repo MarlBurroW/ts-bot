@@ -81,6 +81,14 @@ async fn main() -> Result<()> {
     let ws_config = config.clone();
     let tts_enabled = config.tts_enabled;
 
+    // Shared TTS stop flag — allows WS server to interrupt playback
+    let tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>> = if tts_enabled {
+        Some(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    } else {
+        None
+    };
+    let tts_stop_flag_for_ts3 = tts_stop_flag.clone();
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -238,9 +246,10 @@ async fn main() -> Result<()> {
                 // AudioPlayer needs ts3_sender to send audio packets to TS3
                 let audio_player: Option<Arc<AudioPlayer>> = if config.tts_enabled {
                     info!("Initializing TTS audio player");
-                    Some(Arc::new(AudioPlayer::new(
+                    Some(Arc::new(AudioPlayer::with_stop_flag(
                         ts3_sender.clone(),
                         event_tx_clone.clone(),
+                        tts_stop_flag_for_ts3.clone(),
                     )))
                 } else {
                     info!("TTS is disabled");
@@ -751,8 +760,9 @@ async fn main() -> Result<()> {
 
     // Spawn WebSocket server task (with TTS channel if enabled)
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
+    let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });

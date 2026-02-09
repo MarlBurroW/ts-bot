@@ -28,11 +28,16 @@ struct PlaybackRequest {
 pub struct AudioPlayer {
     /// Channel to send encoded frames to the playback task
     request_tx: mpsc::Sender<PlaybackRequest>,
-    /// Shared flag to interrupt playback
+    /// Shared flag to interrupt playback — can be shared externally for remote stop
     is_speaking: Arc<AtomicBool>,
 }
 
 impl AudioPlayer {
+    /// Get a clone of the is_speaking flag (for external stop control)
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.is_speaking.clone()
+    }
+
     /// Create a new AudioPlayer and spawn the background playback task.
     ///
     /// - `ts3_sender`: handle to the TS3 connection for sending audio packets
@@ -41,8 +46,18 @@ impl AudioPlayer {
         mut ts3_sender: tsclientlib::sync::SyncConnectionHandle,
         event_tx: tokio::sync::broadcast::Sender<crate::models::WebSocketEvent>,
     ) -> Self {
+        Self::with_stop_flag(ts3_sender, event_tx, None)
+    }
+
+    /// Create a new AudioPlayer with an optional external stop flag.
+    /// If provided, the flag is shared so external code can stop playback.
+    pub fn with_stop_flag(
+        mut ts3_sender: tsclientlib::sync::SyncConnectionHandle,
+        event_tx: tokio::sync::broadcast::Sender<crate::models::WebSocketEvent>,
+        external_flag: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<PlaybackRequest>(16);
-        let is_speaking = Arc::new(AtomicBool::new(false));
+        let is_speaking = external_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         let is_speaking_clone = is_speaking.clone();
 
         // Spawn the playback task

@@ -16,6 +16,8 @@ pub struct RustpotterWakeWord {
     frame_size: usize,
     /// Internal buffer for accumulating samples between calls
     buffer: Vec<f32>,
+    /// Frame counter for periodic logging
+    frame_count: u64,
 }
 
 impl RustpotterWakeWord {
@@ -30,9 +32,10 @@ impl RustpotterWakeWord {
             endianness: Endianness::Native,
         };
         // Tuning: lower thresholds = more sensitive, higher = fewer false positives
-        config.detector.avg_threshold = 0.4;
-        config.detector.threshold = 0.4;
-        config.detector.min_scores = 3;
+        // Using very low thresholds since model was trained with TTS samples only
+        config.detector.avg_threshold = 0.15;
+        config.detector.threshold = 0.15;
+        config.detector.min_scores = 2;
         config.detector.eager = true;
 
         // Enable gain normalization for consistent detection across volume levels
@@ -56,6 +59,7 @@ impl RustpotterWakeWord {
             detector,
             frame_size,
             buffer: Vec::with_capacity(frame_size * 2),
+            frame_count: 0,
         })
     }
 
@@ -73,11 +77,19 @@ impl RustpotterWakeWord {
         self.buffer.extend_from_slice(samples);
 
         let mut detected = false;
+        self.frame_count += 1;
         while self.buffer.len() >= self.frame_size {
             let frame: Vec<f32> = self.buffer.drain(..self.frame_size).collect();
+            // Log RMS every ~2 seconds (100 frames at 20ms) to verify audio flows
+            if self.frame_count % 100 == 0 {
+                let rms: f32 = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
+                if rms > 0.005 {
+                    info!("Rustpotter audio flowing (rms={:.4}, frames={})", rms, self.frame_count);
+                }
+            }
             if let Some(detection) = self.detector.process_samples(frame) {
                 info!(
-                    "Rustpotter detection: name='{}', score={:.3}, avg_score={:.3}",
+                    "🎯 Rustpotter detection: name='{}', score={:.3}, avg_score={:.3}",
                     detection.name, detection.score, detection.avg_score
                 );
                 detected = true;
