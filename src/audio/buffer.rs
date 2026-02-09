@@ -80,7 +80,14 @@ impl AudioBuffer {
             }
             self.samples.push_back(sample);
         }
-        self.last_activity = Instant::now();
+        // Only update activity timestamp if there's actual speech (not silence)
+        let rms = if samples.is_empty() { 0.0 } else {
+            let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+            (sum_sq / samples.len() as f32).sqrt()
+        };
+        if rms > 0.01 {
+            self.last_activity = Instant::now();
+        }
     }
 
     /// Get all buffered samples
@@ -166,7 +173,7 @@ impl SpeakerBufferManager {
         Self {
             buffers: HashMap::new(),
             max_buffer_duration: Duration::from_secs(30), // 30 seconds max
-            silence_timeout: Duration::from_millis(2500), // 2.5s after speech started
+            silence_timeout: Duration::from_millis(1500), // 1.5s after speech started
             initial_timeout: Duration::from_secs(7),      // 7s to start speaking after "J'écoute"
         }
     }
