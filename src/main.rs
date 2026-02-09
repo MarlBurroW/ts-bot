@@ -269,6 +269,7 @@ async fn main() -> Result<()> {
                 // Process events from the SyncConnection stream
                 tokio::pin!(sync_con);
                 let mut silence_check_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+                let mut buffer_cleanup_interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 let mut shutting_down = false;
 
                 loop {
@@ -419,6 +420,12 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+                        }
+
+                        // Periodic cleanup of old inactive speaker buffers
+                        _ = buffer_cleanup_interval.tick() => {
+                            let mut bm = buffer_manager.lock().await;
+                            bm.cleanup_old_buffers(std::time::Duration::from_secs(300));
                         }
 
                         // Process TS3 events
