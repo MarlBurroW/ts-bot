@@ -1,0 +1,48 @@
+[package]
+name = "ts3_bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# TS3 client protocol
+tsclientlib = { version = "0.2", features = ["unstable"] }
+ts-bookkeeping = "0.1"
+
+# Async runtime and WebSocket server
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+futures = "0.3"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+dotenvy = "0.15"
+envy = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Audio processing
+whisper-rs = { version = "0.12", features = ["whisper-cpp-tracing"] }
+audiopus = "0.2"
+hound = "3.5"
+
+# TTS - sync HTTP client for external TTS service (OpenAI-compatible API)
+ureq = { version = "2", features = ["json"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+base64 = "0.13"
+tsproto-packets = "0.1.0"
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"

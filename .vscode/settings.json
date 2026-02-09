@@ -1,0 +1,6 @@
+{
+    "terminal.integrated.env.windows": {
+        "LIBCLANG_PATH": "d:\\projets\\ts-bot\\clang+llvm-18.1.8-x86_64-pc-windows-msvc\\bin",
+        "CMAKE_GENERATOR": "Visual Studio 17 2022"
+    }
+}

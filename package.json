@@ -1,0 +1,19 @@
+{
+  "name": "ts3-bot-test",
+  "version": "1.0.0",
+  "description": "WebSocket test client for TS3 Bot",
+  "main": "test-websocket.js",
+  "scripts": {
+    "test": "node test-websocket.js"
+  },
+  "keywords": [
+    "teamspeak",
+    "websocket",
+    "test"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

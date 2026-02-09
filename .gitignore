@@ -1,0 +1,9 @@
+/target/
+*.swp
+*.swo
+.env
+models/
+*.bin
+.ts3_identity
+samples/
+tmp_*.wav
