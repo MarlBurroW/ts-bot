@@ -16,6 +16,14 @@ pub enum CommandAction {
     MoveChannel { command_id: Option<String>, channel_id: u64, password: Option<String> },
     /// Send a text message (channel or private)
     SendMessage { command_id: Option<String>, target: String, content: String, client_id: Option<u64> },
+    /// Poke a client
+    PokeClient { command_id: Option<String>, client_id: u64, message: String },
+    /// Kick a client from channel or server
+    KickClient { command_id: Option<String>, client_id: u64, reason: String, reason_id: u8 },
+    /// Move a client to a different channel
+    MoveClient { command_id: Option<String>, client_id: u64, channel_id: u64, password: Option<String> },
+    /// Change the bot's nickname
+    SetNickname { command_id: Option<String>, nickname: String },
 }
 
 /// Handle incoming WebSocket command
@@ -65,6 +73,29 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
                 Some("Playback stopped".to_string()),
             ),
             CommandAction::StopSpeaking,
+        ),
+        WebSocketCommand::PokeClient { command_id, client_id, message } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Poking client...".to_string())),
+            CommandAction::PokeClient { command_id, client_id, message: message.unwrap_or_default() },
+        ),
+        WebSocketCommand::KickClient { command_id, client_id, reason, kick_type } => {
+            // reason_id: 5 = kick from channel, 4 = kick from server
+            let reason_id = match kick_type.as_deref() {
+                Some("channel") => 5u8,
+                _ => 4u8, // default to server kick
+            };
+            (
+                WebSocketEvent::command_success(command_id.clone(), Some("Kicking client...".to_string())),
+                CommandAction::KickClient { command_id, client_id, reason: reason.unwrap_or_default(), reason_id },
+            )
+        }
+        WebSocketCommand::MoveClient { command_id, client_id, channel_id, password } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Moving client...".to_string())),
+            CommandAction::MoveClient { command_id, client_id, channel_id, password },
+        ),
+        WebSocketCommand::SetNickname { command_id, nickname } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Setting nickname...".to_string())),
+            CommandAction::SetNickname { command_id, nickname },
         ),
     }
 }

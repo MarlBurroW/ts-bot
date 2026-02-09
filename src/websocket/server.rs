@@ -199,11 +199,26 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             })
                                         }).collect();
                                         let clients: Vec<serde_json::Value> = state.clients.iter().map(|(id, cl)| {
-                                            serde_json::json!({
+                                            let mut client_json = serde_json::json!({
                                                 "id": id.0,
                                                 "name": cl.name,
-                                                "channel_id": cl.channel.0
-                                            })
+                                                "channel_id": cl.channel.0,
+                                                "input_muted": cl.input_muted,
+                                                "output_muted": cl.output_muted,
+                                                "is_recording": cl.is_recording,
+                                                "talk_power": cl.talk_power,
+                                                "is_priority_speaker": cl.is_priority_speaker
+                                            });
+                                            if let Some(ref uid) = cl.uid {
+                                                client_json["uid"] = serde_json::json!(uid.0);
+                                            }
+                                            if let Some(ref away_msg) = cl.away_message {
+                                                client_json["away_message"] = serde_json::json!(away_msg);
+                                            }
+                                            if !cl.description.is_empty() {
+                                                client_json["description"] = serde_json::json!(cl.description);
+                                            }
+                                            client_json
                                         }).collect();
                                         serde_json::json!({
                                             "own_client_id": own_client_id,
@@ -295,6 +310,114 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                     Err(e) => {
                                         let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Move failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::PokeClient { command_id, client_id, message } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                let mut cmd = OutCommand::new(
+                                    Direction::C2S,
+                                    Flags::empty(),
+                                    PacketType::Command,
+                                    "clientpoke",
+                                );
+                                cmd.write_arg("clid", &(client_id as u16));
+                                cmd.write_arg("msg", &message);
+
+                                match sender.send_command(cmd).await {
+                                    Ok(()) => {
+                                        info!("Poked client {} with message: {}", client_id, &message[..message.len().min(60)]);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Poked client {}", client_id))));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Poke failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::KickClient { command_id, client_id, reason, reason_id } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                let mut cmd = OutCommand::new(
+                                    Direction::C2S,
+                                    Flags::empty(),
+                                    PacketType::Command,
+                                    "clientkick",
+                                );
+                                cmd.write_arg("clid", &(client_id as u16));
+                                cmd.write_arg("reasonid", &reason_id);
+                                if !reason.is_empty() {
+                                    cmd.write_arg("reasonmsg", &reason);
+                                }
+
+                                let kick_type_str = if reason_id == 5 { "channel" } else { "server" };
+                                match sender.send_command(cmd).await {
+                                    Ok(()) => {
+                                        info!("Kicked client {} from {} (reason: {})", client_id, kick_type_str, &reason[..reason.len().min(60)]);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Kicked client {} from {}", client_id, kick_type_str))));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Kick failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::MoveClient { command_id, client_id, channel_id, password } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                let mut cmd = OutCommand::new(
+                                    Direction::C2S,
+                                    Flags::empty(),
+                                    PacketType::Command,
+                                    "clientmove",
+                                );
+                                cmd.write_arg("clid", &(client_id as u16));
+                                cmd.write_arg("cid", &channel_id);
+                                if let Some(ref p) = password {
+                                    if !p.is_empty() {
+                                        cmd.write_arg("cpw", p);
+                                    }
+                                }
+
+                                match sender.send_command(cmd).await {
+                                    Ok(()) => {
+                                        info!("Moved client {} to channel {}", client_id, channel_id);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Moved client {} to channel {}", client_id, channel_id))));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Move client failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::SetNickname { command_id, nickname } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                let mut cmd = OutCommand::new(
+                                    Direction::C2S,
+                                    Flags::empty(),
+                                    PacketType::Command,
+                                    "clientupdate",
+                                );
+                                cmd.write_arg("client_nickname", &nickname);
+
+                                match sender.send_command(cmd).await {
+                                    Ok(()) => {
+                                        info!("Nickname changed to '{}'", nickname);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Nickname changed to '{}'", nickname))));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Set nickname failed: {:?}", e)));
                                     }
                                 }
                             } else {
