@@ -125,7 +125,8 @@ impl TtsSynthesizer for HttpTtsSynthesizer {
             "model": self.model,
             "input": text,
             "voice": voice,
-            "response_format": "wav"
+            "response_format": "wav",
+            "speed": 1.15
         });
 
         let mut request = self

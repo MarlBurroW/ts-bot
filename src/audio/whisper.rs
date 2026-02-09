@@ -203,7 +203,7 @@ impl WhisperTranscriber {
             .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {}", e))?;
 
         // Pad to at least 1 second for Whisper minimum requirement
-        let min_samples = 16000; // 1 second at 16kHz
+        let min_samples = 32000; // 2 seconds at 16kHz (Whisper needs margin)
         let padded_samples;
         let audio = if samples.len() < min_samples {
             padded_samples = {

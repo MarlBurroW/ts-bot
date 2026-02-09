@@ -26,6 +26,22 @@ pub enum CommandAction {
     SetNickname { command_id: Option<String>, nickname: String },
     /// Query TS3 server info (name, version, platform, max_clients, etc.)
     GetServerInfo { command_id: Option<String> },
+    /// Create a new channel
+    CreateChannel {
+        command_id: Option<String>,
+        name: String,
+        parent_id: Option<u64>,
+        temporary: Option<bool>,
+        topic: Option<String>,
+        description: Option<String>,
+        password: Option<String>,
+    },
+    /// Set channel description
+    SetChannelDescription {
+        command_id: Option<String>,
+        channel_id: u64,
+        description: String,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -102,6 +118,14 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::GetServerInfo { command_id } => (
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetServerInfo { command_id },
+        ),
+        WebSocketCommand::CreateChannel { command_id, name, parent_id, temporary, topic, description, password } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Creating channel...".to_string())),
+            CommandAction::CreateChannel { command_id, name, parent_id, temporary, topic, description, password },
+        ),
+        WebSocketCommand::SetChannelDescription { command_id, channel_id, description } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Setting description...".to_string())),
+            CommandAction::SetChannelDescription { command_id, channel_id, description },
         ),
     }
 }

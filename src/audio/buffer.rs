@@ -85,7 +85,7 @@ impl AudioBuffer {
             let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
             (sum_sq / samples.len() as f32).sqrt()
         };
-        if rms > 0.03 {
+        if rms > 0.005 {
             self.last_activity = Instant::now();
         }
     }
@@ -173,7 +173,7 @@ impl SpeakerBufferManager {
         Self {
             buffers: HashMap::new(),
             max_buffer_duration: Duration::from_secs(30), // 30 seconds max
-            silence_timeout: Duration::from_millis(1500), // 1.5s after speech started
+            silence_timeout: Duration::from_millis(2000), // 2s after speech started
             initial_timeout: Duration::from_secs(7),      // 7s to start speaking after "J'écoute"
         }
     }

@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         info!("Initializing audio processing components");
 
         // Dual Whisper pipeline: tiny for wake word, small for transcription
-        let wake_pipeline = match WakeWordPipeline::new("models/ggml-tiny.bin", "marlbot") {
+        let wake_pipeline = match WakeWordPipeline::new("models/ggml-base.bin", "marlbot") {
             Ok(p) => {
                 info!("WakeWordPipeline (tiny) initialized successfully");
                 Some(Arc::new(Mutex::new(p)))
@@ -577,16 +577,20 @@ async fn main() -> Result<()> {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
                                                                 state.clients.get(&client_id).map(|c| {
-                                                                    (c.name.clone(), c.channel.0 as u64)
+                                                                    let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                                    let cc = if c.country_code.is_empty() { None } else { Some(c.country_code.clone()) };
+                                                                    (c.name.clone(), c.channel.0 as u64, uid, cc)
                                                                 })
                                                             })
                                                         }).await;
-                                                        if let Ok(Some((name, channel_id))) = result {
-                                                            info!("Client connected: {} (id: {})", name, client_id_u64);
+                                                        if let Ok(Some((name, channel_id, uid, country_code))) = result {
+                                                            info!("Client connected: {} (id: {}, uid: {:?})", name, client_id_u64, uid);
                                                             let _ = tx.send(WebSocketEvent::ClientConnected {
                                                                 client_id: client_id_u64,
                                                                 client_name: name,
                                                                 channel_id,
+                                                                uid,
+                                                                country_code,
                                                             });
                                                         }
                                                     });
@@ -594,10 +598,12 @@ async fn main() -> Result<()> {
                                             }
                                             Event::PropertyRemoved { id, old, .. } => {
                                                 if let (PropertyId::Client(client_id), PropertyValue::Client(client)) = (id, old) {
-                                                    info!("Client disconnected: {} (id: {})", client.name, client_id.0);
+                                                    let uid = client.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                    info!("Client disconnected: {} (id: {}, uid: {:?})", client.name, client_id.0, uid);
                                                     let _ = event_tx_clone.send(WebSocketEvent::ClientDisconnected {
                                                         client_id: client_id.0 as u64,
                                                         client_name: client.name.clone(),
+                                                        uid,
                                                     });
                                                 }
                                             }
@@ -612,17 +618,23 @@ async fn main() -> Result<()> {
                                                             con.get_state().ok().and_then(|state| {
                                                                 let is_self = state.own_client == client_id;
                                                                 state.clients.get(&client_id).map(|c| {
-                                                                    (c.name.clone(), c.channel.0 as u64, is_self)
+                                                                    let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                                    let old_ch_name = state.channels.get(&tsclientlib::ChannelId(old_channel.0)).map(|ch| ch.name.clone());
+                                                                    let new_ch_name = state.channels.get(&c.channel).map(|ch| ch.name.clone());
+                                                                    (c.name.clone(), c.channel.0 as u64, is_self, uid, old_ch_name, new_ch_name)
                                                                 })
                                                             })
                                                         }).await;
-                                                        if let Ok(Some((name, new_channel_id, is_self))) = result {
+                                                        if let Ok(Some((name, new_channel_id, is_self, uid, old_ch_name, new_ch_name))) = result {
                                                             info!("Client moved: {} ({} -> {})", name, old_channel_id, new_channel_id);
                                                             let _ = tx.send(WebSocketEvent::ClientMoved {
                                                                 client_id: client_id_u64,
                                                                 client_name: name,
                                                                 old_channel_id,
                                                                 new_channel_id,
+                                                                uid,
+                                                                old_channel_name: old_ch_name,
+                                                                new_channel_name: new_ch_name,
                                                             });
                                                             // Persist channel ID when the bot itself moves
                                                             if is_self {
@@ -661,6 +673,14 @@ async fn main() -> Result<()> {
                                                 .unwrap_or_else(|| (format!("Speaker_{}", speaker_id), "unknown".to_string()))
                                         };
 
+                                        // Skip audio from bot instances (avoid listening to ourselves)
+                                        {
+                                            let name_lower = speaker_name.to_lowercase();
+                                            if name_lower.starts_with("marlbot") {
+                                                continue;
+                                            }
+                                        }
+
                                         // Decode Opus + resample via per-speaker decoder
                                         let mut bm = buffer_manager.lock().await;
                                         let buffer = bm.get_or_create_buffer(
@@ -681,6 +701,14 @@ async fn main() -> Result<()> {
 
                                         if !is_active {
                                             if let Some(ref wp_arc) = wake_pipeline {
+                                                // Skip wake word checks while TTS is playing (avoid self-trigger)
+                                                if let Some(ref player) = audio_player {
+                                                    if player.is_speaking() {
+                                                        drop(bm);
+                                                        continue;
+                                                    }
+                                                }
+
                                                 // Always check wake word — no busy gate!
                                                 // The wake pipeline has its own Mutex.
                                                 if buffer.should_check_wake_word(wake_check_interval) {
