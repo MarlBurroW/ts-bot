@@ -596,6 +596,14 @@ async fn main() -> Result<()> {
                                                 let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(3));
                                                 drop(bm);
 
+                                                // Skip Whisper if audio is silence — Whisper hallucinates on silence
+                                                // (e.g. "Merci d'avoir regardé") which can cause false wake triggers
+                                                let energy = ts3_bot::audio::rms_energy(&recent_audio);
+                                                if energy < 0.005 {
+                                                    debug!("Skipping wake word check for speaker {} (silence, RMS={:.6})", speaker_id, energy);
+                                                    continue;
+                                                }
+
                                                 // Spawn wake word check via pipeline in background
                                                 let pipeline_clone = pipeline_arc.clone();
                                                 let whisper_tx_clone = whisper_tx.clone();
