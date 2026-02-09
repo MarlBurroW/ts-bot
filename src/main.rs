@@ -13,8 +13,8 @@ use tsproto_packets::packets::AudioData;
 use base64;
 use ts3_bot::audio::{
     SpeakerBufferManager,
-    RustpotterWakeWord,
     TranscriptionPipeline,
+    WakeWordPipeline,
 };
 use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
 use std::collections::HashMap;
@@ -97,14 +97,14 @@ async fn main() -> Result<()> {
         // Initialize audio processing components
         info!("Initializing audio processing components");
 
-        // Rustpotter wake word detector (replaces Whisper-based wake word)
-        let wake_detector = match RustpotterWakeWord::new("models/marlbot.rpw") {
-            Ok(d) => {
-                info!("Rustpotter wake word detector initialized successfully");
-                Some(Arc::new(Mutex::new(d)))
+        // Whisper base wake word detector (better French than tiny, fast enough for wake word)
+        let wake_detector = match WakeWordPipeline::new("models/ggml-base.bin", "marlbot") {
+            Ok(p) => {
+                info!("WakeWordPipeline (base) initialized successfully");
+                Some(Arc::new(Mutex::new(p)))
             }
             Err(e) => {
-                warn!("Failed to initialize Rustpotter: {}. Wake word detection disabled.", e);
+                warn!("Failed to initialize WakeWordPipeline: {}. Wake word detection disabled.", e);
                 None
             }
         };
@@ -685,70 +685,12 @@ async fn main() -> Result<()> {
                                             continue;
                                         }
 
-                                        let is_active = buffer.is_active;
-                                        let wake_check_interval = std::time::Duration::from_millis(1500);
-
-                                        if !is_active {
-                                            // Wake word detection via Whisper API
-                                            if whisper_api.is_some() {
-                                                // Skip while TTS is playing
-                                                if let Some(ref player) = audio_player {
-                                                    if player.is_speaking() {
-                                                        drop(bm);
-                                                        continue;
-                                                    }
-                                                }
-
-                                                if buffer.should_check_wake_word(wake_check_interval) {
-                                                    buffer.mark_wake_check();
-                                                    let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(2));
-                                                    drop(bm);
-
-                                                    // Skip silence
-                                                    let energy = ts3_bot::audio::rms_energy(&recent_audio);
-                                                    if energy < 0.008 { continue; }
-
-                                                    let spk_name = {
-                                                        let names = client_names.read().unwrap_or_else(|e| e.into_inner());
-                                                        names.get(&speaker_id).map(|(n, _)| n.clone()).unwrap_or_else(|| format!("Speaker_{}", speaker_id))
-                                                    };
-                                                    info!("Wake word check for {} (rms={:.4}, samples={})",
-                                                        spk_name, energy, recent_audio.len());
-
-                                                    if let Some(ref api) = whisper_api {
-                                                        let api_clone = api.clone();
-                                                        let whisper_tx_clone = whisper_tx.clone();
-                                                        tokio::task::spawn_blocking(move || {
-                                                            match api_clone.transcribe(&recent_audio, Some("fr")) {
-                                                                Ok(text) => {
-                                                                    let text_lower = text.to_lowercase();
-                                                                    let exact_patterns = [
-                                                                        "marlbot", "marl bot", "marbot", "marlbott",
-                                                                        "marlbote", "marlbeth", "marlboth", "marlbet",
-                                                                        "mar bot", "marl'bot", "marlebot", "marle bot",
-                                                                        "l'botte", "l'bot", "marbotte", "marl'botte",
-                                                                        "merlbot", "merlbotte", "marlbeau", "marbeau",
-                                                                    ];
-                                                                    let short_patterns = [
-                                                                        "le bot", "meurt le bot", "le botte",
-                                                                    ];
-                                                                    let detected = exact_patterns.iter().any(|p| text_lower.contains(p))
-                                                                        || (text_lower.len() < 30 && short_patterns.iter().any(|p| text_lower.contains(p)));
-                                                                    info!("Wake word API: '{}' detected={}", text, detected);
-                                                                    let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
-                                                                        speaker_id, detected, text,
-                                                                    });
-                                                                }
-                                                                Err(e) => warn!("Whisper API wake check failed: {}", e),
-                                                            }
-                                                        });
-                                                    }
-                                                } else {
-                                                    drop(bm);
-                                                }
-                                            } else {
-                                                drop(bm);
-                                            }
+                                        // Audio wake word detection is DISABLED.
+                                        // Wake word is now triggered via text chat messages
+                                        // containing "marlbot" (handled by OpenClaw plugin).
+                                        // Audio is still buffered for transcription after activation.
+                                        if !buffer.is_active {
+                                            drop(bm);
                                         }
                                         // Active speaker: audio is just buffered
                                         // Silence detection is handled by the periodic timer

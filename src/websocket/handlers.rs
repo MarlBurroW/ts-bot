@@ -127,5 +127,9 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             WebSocketEvent::command_success(command_id.clone(), Some("Setting description...".to_string())),
             CommandAction::SetChannelDescription { command_id, channel_id, description },
         ),
+        WebSocketCommand::ActivateListener { command_id, .. } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Listener activation not supported server-side (use plugin)".to_string())),
+            CommandAction::None,
+        ),
     }
 }

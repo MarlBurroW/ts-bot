@@ -274,7 +274,9 @@ impl WakeWordPipeline {
     /// - `bot_name`: name of the bot for wake word detection (e.g., "marlbot")
     pub fn new(model_path: impl AsRef<Path>, bot_name: &str) -> Result<Self> {
         let mut transcriber = WhisperTranscriber::new(model_path)?;
-        transcriber.set_initial_prompt("Hey marlbot.");
+        // initial_prompt guides Whisper to recognize "marlbot" (without it, base transcribes garbage)
+        // Hallucinations are filtered by the is_hallucination() check + energy threshold in main.rs
+        transcriber.set_initial_prompt("Marlbot.");
         let detector = WakeWordDetector::new(bot_name);
 
         Ok(Self {

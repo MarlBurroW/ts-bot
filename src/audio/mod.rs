@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod wav_loader;
 pub mod whisper_api;
 pub mod rustpotter_detector;
+pub mod porcupine_wake;
 
 pub use decoder::OpusDecoder;
 pub use encoder::OpusEncoder;
