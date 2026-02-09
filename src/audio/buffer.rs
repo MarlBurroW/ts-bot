@@ -85,7 +85,7 @@ impl AudioBuffer {
             let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
             (sum_sq / samples.len() as f32).sqrt()
         };
-        if rms > 0.01 {
+        if rms > 0.03 {
             self.last_activity = Instant::now();
         }
     }
