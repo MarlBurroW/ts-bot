@@ -13,7 +13,7 @@ use tsproto_packets::packets::AudioData;
 use base64;
 use ts3_bot::audio::{
     SpeakerBufferManager,
-    WakeWordPipeline,
+    RustpotterWakeWord,
     TranscriptionPipeline,
 };
 use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
@@ -28,7 +28,6 @@ use ts_bookkeeping::{MessageTarget, DisconnectOptions, Reason};
 
 /// Results from background whisper tasks
 enum WhisperResult {
-    WakeWordCheck { speaker_id: u64, detected: bool, text: String },
     Transcription {
         speaker_id: u64,
         speaker_name: String,
@@ -89,14 +88,14 @@ async fn main() -> Result<()> {
         // Initialize audio processing components
         info!("Initializing audio processing components");
 
-        // Dual Whisper pipeline: tiny for wake word, small for transcription
-        let wake_pipeline = match WakeWordPipeline::new("models/ggml-base.bin", "marlbot") {
-            Ok(p) => {
-                info!("WakeWordPipeline (tiny) initialized successfully");
-                Some(Arc::new(Mutex::new(p)))
+        // Rustpotter wake word detector (replaces Whisper-based wake word)
+        let wake_detector = match RustpotterWakeWord::new("models/marlbot.rpw") {
+            Ok(d) => {
+                info!("Rustpotter wake word detector initialized successfully");
+                Some(Arc::new(Mutex::new(d)))
             }
             Err(e) => {
-                warn!("Failed to initialize WakeWordPipeline: {}. Wake word detection disabled.", e);
+                warn!("Failed to initialize Rustpotter: {}. Wake word detection disabled.", e);
                 None
             }
         };
@@ -322,60 +321,6 @@ async fn main() -> Result<()> {
                         // Process results from background whisper tasks
                         Some(result) = whisper_rx.recv() => {
                             match result {
-                                WhisperResult::WakeWordCheck { speaker_id, detected, text } => {
-                                    // Guard: ignore wake word results if speaker is already in listening (active) state.
-                                    // This prevents double triggers from overlapping spawn_blocking tasks.
-                                    {
-                                        let bm_guard = buffer_manager.lock().await;
-                                        if let Some(buf) = bm_guard.get_buffer(speaker_id) {
-                                            if buf.is_active {
-                                                debug!("Ignoring wake word result for speaker {} (already active/listening)", speaker_id);
-                                                continue;
-                                            }
-                                        }
-                                    }
-
-                                    if text.is_empty() {
-                                        info!("Wake word check for speaker {}: (silence/empty)", speaker_id);
-                                    } else if detected {
-                                        info!("Wake word detected from speaker {}!", speaker_id);
-
-                                        // Interrupt TTS playback if bot is speaking
-                                        if let Some(ref player) = audio_player {
-                                            if player.is_speaking() {
-                                                info!("Interrupting TTS playback (wake word)");
-                                                player.stop();
-                                            }
-                                        }
-
-                                        let mut bm = buffer_manager.lock().await;
-                                        if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                            buf.activate();
-                                            // Clear the buffer to prevent double wake word trigger
-                                            buf.clear();
-                                            // Reset wake check timestamp so next check uses fresh audio only
-                                            buf.mark_wake_check();
-                                            let name = buf.speaker_name.clone();
-                                            drop(bm);
-                                            let _ = ts3_msg_tx.try_send(
-                                                format!("J'ecoute, {} ?", name)
-                                            );
-
-                                            // Play cached voice confirmation
-                                            if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
-                                                let frames = (**cached).clone();
-                                                let player_ref = player.clone();
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
-                                                        warn!("Failed to play wake confirmation: {}", e);
-                                                    }
-                                                });
-                                            }
-                                        }
-                                    } else {
-                                        info!("Wake word check for speaker {}: '{}'", speaker_id, text);
-                                    }
-                                }
                                 WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
                                     // command field is unused in new architecture (no wake word stripping needed)
                                     let _ = command;
@@ -651,7 +596,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 SyncStreamItem::Audio(audio_data) => {
-                                    if wake_pipeline.is_some() || transcription_pipeline.is_some() {
+                                    if wake_detector.is_some() || transcription_pipeline.is_some() {
                                         let audio_inner = audio_data.data();
                                         let data = audio_inner.data();
 
@@ -697,10 +642,9 @@ async fn main() -> Result<()> {
                                         }
 
                                         let is_active = buffer.is_active;
-                                        let wake_check_interval = std::time::Duration::from_millis(800);
 
                                         if !is_active {
-                                            if let Some(ref wp_arc) = wake_pipeline {
+                                            if let Some(ref wd_arc) = wake_detector {
                                                 // Skip wake word checks while TTS is playing (avoid self-trigger)
                                                 if let Some(ref player) = audio_player {
                                                     if player.is_speaking() {
@@ -709,34 +653,53 @@ async fn main() -> Result<()> {
                                                     }
                                                 }
 
-                                                // Always check wake word — no busy gate!
-                                                // The wake pipeline has its own Mutex.
-                                                if buffer.should_check_wake_word(wake_check_interval) {
-                                                    buffer.mark_wake_check();
-                                                    let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(5));
-                                                    drop(bm);
+                                                // Get the latest decoded 16kHz samples from this packet
+                                                let recent_audio = buffer.get_recent_samples(std::time::Duration::from_millis(20));
+                                                let speaker_name_clone = buffer.speaker_name.clone();
+                                                drop(bm);
 
-                                                    // Skip if silence to avoid hallucinations
-                                                    let energy = ts3_bot::audio::rms_energy(&recent_audio);
-                                                    if energy < 0.008 {
-                                                        debug!("Skipping wake word check for speaker {} (silence, RMS={:.6})", speaker_id, energy);
-                                                        continue;
+                                                // Feed samples to Rustpotter (inline, ultra fast ~μs)
+                                                let mut wd = wd_arc.lock().await;
+                                                let detected = wd.process_samples(&recent_audio);
+                                                drop(wd);
+
+                                                if detected {
+                                                    info!("🎯 Rustpotter wake word detected from speaker {} ({})!", speaker_id, speaker_name_clone);
+
+                                                    // Interrupt TTS playback if bot is speaking
+                                                    if let Some(ref player) = audio_player {
+                                                        if player.is_speaking() {
+                                                            info!("Interrupting TTS playback (wake word)");
+                                                            player.stop();
+                                                        }
                                                     }
 
-                                                    let wp_clone = wp_arc.clone();
-                                                    let whisper_tx_clone = whisper_tx.clone();
+                                                    let mut bm2 = buffer_manager.lock().await;
+                                                    if let Some(buf) = bm2.get_buffer_mut(speaker_id) {
+                                                        buf.activate();
+                                                        buf.clear();
+                                                        buf.mark_wake_check();
+                                                        let name = buf.speaker_name.clone();
+                                                        drop(bm2);
+                                                        let _ = ts3_msg_tx.try_send(
+                                                            format!("J'ecoute, {} ?", name)
+                                                        );
 
-                                                    tokio::task::spawn_blocking(move || {
-                                                        let mut lock = wp_clone.blocking_lock();
-                                                        let (detected, text) = lock.check_wake_word(&recent_audio)
-                                                            .unwrap_or_default();
-                                                        drop(lock);
-                                                        let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
-                                                            speaker_id,
-                                                            detected,
-                                                            text,
-                                                        });
-                                                    });
+                                                        // Play cached voice confirmation
+                                                        if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
+                                                            let frames = (**cached).clone();
+                                                            let player_ref = player.clone();
+                                                            tokio::spawn(async move {
+                                                                if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
+                                                                    warn!("Failed to play wake confirmation: {}", e);
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+
+                                                    // Reset detector state after detection
+                                                    let mut wd = wd_arc.lock().await;
+                                                    wd.reset();
                                                 }
                                             }
                                         }
