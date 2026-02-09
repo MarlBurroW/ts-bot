@@ -26,9 +26,19 @@ impl OpusDecoder {
 
     /// Decode Opus audio packet to PCM samples
     /// Returns Vec<i16> PCM samples at 48kHz
+    ///
+    /// Handles malformed/empty packets gracefully using Opus PLC (Packet Loss
+    /// Concealment) instead of propagating errors. TS3 sends many such packets
+    /// during silence, so erroring on them is wasteful.
     pub fn decode(&mut self, opus_data: &[u8]) -> Result<Vec<i16>> {
         // Allocate buffer for decoded audio (max frame size)
         let mut output = vec![0i16; 5760]; // 120ms at 48kHz
+
+        // Skip trivially invalid packets (empty or single-byte) — return silence
+        if opus_data.len() < 2 {
+            debug!("Skipping too-short Opus packet ({} bytes)", opus_data.len());
+            return Ok(Vec::new());
+        }
 
         // Decode the opus packet
         match self.decoder.decode(Some(opus_data), &mut output, false) {
@@ -40,11 +50,22 @@ impl OpusDecoder {
             }
             Err(e) => {
                 let count = OPUS_DECODE_ERRORS.fetch_add(1, Ordering::Relaxed) + 1;
-                // Log only every 50th error to avoid spam
-                if count == 1 || count % 50 == 0 {
-                    warn!("Failed to decode Opus packet: {} (total errors: {})", e, count);
+                // Log only every 200th error to reduce noise
+                if count == 1 || count % 200 == 0 {
+                    warn!("Opus decode error (total: {}): {} — using PLC", count, e);
                 }
-                Err(anyhow::anyhow!("Opus decode error: {}", e))
+                // Use Opus PLC: pass None to generate concealment audio
+                // This keeps the decoder state consistent and avoids audio glitches
+                match self.decoder.decode(None::<&[u8]>, &mut output, false) {
+                    Ok(size) => {
+                        output.truncate(size);
+                        Ok(output)
+                    }
+                    Err(_) => {
+                        // PLC also failed — return empty (silence)
+                        Ok(Vec::new())
+                    }
+                }
             }
         }
     }
