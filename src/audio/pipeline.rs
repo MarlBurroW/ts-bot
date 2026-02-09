@@ -284,6 +284,44 @@ impl WakeWordPipeline {
         })
     }
 
+    /// Known Whisper hallucination patterns (produced on silence/noise).
+    /// These should never trigger wake word detection.
+    const HALLUCINATION_PATTERNS: &'static [&'static str] = &[
+        "[musique]",
+        "[music]",
+        "[applaudissements]",
+        "[rires]",
+        "[silence]",
+        "[bruit]",
+        "[bruits]",
+        "merci d'avoir regardé",
+        "merci d'avoir écouté",
+        "sous-titres",
+        "sous-titrage",
+        "soustitres",
+        "merci à tous",
+        "à bientôt",
+        "à la prochaine",
+        "thank you for watching",
+        "thanks for watching",
+        "subscribe",
+        "like and subscribe",
+    ];
+
+    /// Check if text is a known Whisper hallucination
+    fn is_hallucination(text: &str) -> bool {
+        let lower = text.trim().to_lowercase();
+        // Remove surrounding brackets/punctuation for comparison
+        let cleaned: String = lower.chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '[' || *c == ']')
+            .collect();
+        let cleaned = cleaned.trim();
+
+        Self::HALLUCINATION_PATTERNS.iter().any(|pattern| {
+            cleaned.contains(pattern)
+        })
+    }
+
     /// Quick wake word check on audio samples
     ///
     /// Uses the fast `transcribe_wake_word` mode (short token limit).
@@ -296,6 +334,12 @@ impl WakeWordPipeline {
         let text = self.transcriber.transcribe_wake_word(samples)?;
 
         if text.is_empty() {
+            return Ok((false, String::new()));
+        }
+
+        // Filter out known Whisper hallucinations before wake word matching
+        if Self::is_hallucination(&text) {
+            debug!("Whisper hallucination filtered: '{}'", text);
             return Ok((false, String::new()));
         }
 
