@@ -12,7 +12,6 @@ use tokio::sync::broadcast;
 use tsproto_packets::packets::AudioData;
 use base64;
 use ts3_bot::audio::{
-    OpusDecoder,
     SpeakerBufferManager,
     TriggerWordPipeline,
 };
@@ -102,14 +101,6 @@ async fn main() -> Result<()> {
                 warn!("  2. Download a Whisper model (e.g., ggml-small.bin) to models/");
                 warn!("  3. Download from: https://huggingface.co/ggerganov/whisper.cpp/tree/main");
                 None
-            }
-        };
-
-        let decoder = match OpusDecoder::new() {
-            Ok(d) => Arc::new(Mutex::new(d)),
-            Err(e) => {
-                error!("Failed to initialize Opus decoder: {}. Audio will not work.", e);
-                return;
             }
         };
 
@@ -564,20 +555,6 @@ async fn main() -> Result<()> {
                                             _ => continue,
                                         };
 
-                                        // Decode Opus audio to PCM
-                                        let mut decoder_lock = decoder.lock().await;
-                                        let pcm_samples = match decoder_lock.decode(codec_data) {
-                                            Ok(samples) => samples,
-                                            Err(e) => {
-                                                debug!("Failed to decode audio from speaker {}: {}", speaker_id, e);
-                                                continue;
-                                            }
-                                        };
-                                        drop(decoder_lock);
-
-                                        // Resample to 16kHz for Whisper
-                                        let samples_f32 = OpusDecoder::resample_to_16khz(&pcm_samples);
-
                                         // Resolve real TS3 client name from cache
                                         let (speaker_name, speaker_uid) = {
                                             let names = client_names.read().unwrap_or_else(|e| e.into_inner());
@@ -586,7 +563,7 @@ async fn main() -> Result<()> {
                                                 .unwrap_or_else(|| (format!("Speaker_{}", speaker_id), "unknown".to_string()))
                                         };
 
-                                        // Add to speaker's buffer
+                                        // Decode Opus + resample via per-speaker decoder
                                         let mut bm = buffer_manager.lock().await;
                                         let buffer = bm.get_or_create_buffer(
                                             speaker_id,
@@ -596,7 +573,10 @@ async fn main() -> Result<()> {
                                         // Update name in case cache was populated after buffer creation
                                         buffer.speaker_name = speaker_name;
                                         buffer.speaker_uid = speaker_uid;
-                                        buffer.push_samples(&samples_f32);
+                                        if buffer.decode_and_push(codec_data) == 0 {
+                                            drop(bm);
+                                            continue;
+                                        }
 
                                         let is_active = buffer.is_active;
                                         let wake_check_interval = std::time::Duration::from_millis(1500);

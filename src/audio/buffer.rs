@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+use super::OpusDecoder;
 
 /// Audio buffer for a single speaker
 pub struct AudioBuffer {
@@ -17,6 +18,8 @@ pub struct AudioBuffer {
     last_wake_check: Instant,
     /// Is this speaker currently being transcribed?
     pub is_active: bool,
+    /// Per-speaker Opus decoder (Opus is stateful per-stream)
+    opus_decoder: OpusDecoder,
 }
 
 impl AudioBuffer {
@@ -31,6 +34,11 @@ impl AudioBuffer {
         // 16kHz * duration in seconds
         let max_samples = (16000.0 * max_duration.as_secs_f32()) as usize;
 
+        let opus_decoder = OpusDecoder::new().unwrap_or_else(|e| {
+            warn!("Failed to create per-speaker Opus decoder: {}. Using default.", e);
+            OpusDecoder::default()
+        });
+
         Self {
             speaker_id,
             speaker_name,
@@ -40,6 +48,27 @@ impl AudioBuffer {
             last_activity: Instant::now(),
             last_wake_check: Instant::now(),
             is_active: false,
+            opus_decoder,
+        }
+    }
+
+    /// Decode an Opus packet using this speaker's dedicated decoder,
+    /// resample to 16kHz, and push the resulting samples into the buffer.
+    /// Returns the number of f32 samples pushed (0 if decode failed or empty).
+    pub fn decode_and_push(&mut self, opus_data: &[u8]) -> usize {
+        match self.opus_decoder.decode(opus_data) {
+            Ok(pcm) => {
+                if pcm.is_empty() {
+                    return 0;
+                }
+                let samples_f32 = OpusDecoder::resample_to_16khz(&pcm);
+                self.push_samples(&samples_f32);
+                samples_f32.len()
+            }
+            Err(e) => {
+                debug!("Per-speaker Opus decode error for {}: {}", self.speaker_name, e);
+                0
+            }
         }
     }
 
