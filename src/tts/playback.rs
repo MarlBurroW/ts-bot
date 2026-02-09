@@ -194,6 +194,21 @@ impl AudioPlayer {
         self.speak(text, voice, synthesizer).await
     }
 
+    /// Play pre-encoded cached opus frames directly (skipping TTS synthesis).
+    pub async fn play_cached(&self, frames: Vec<Vec<u8>>, label: String) -> Result<()> {
+        if frames.is_empty() {
+            return Ok(());
+        }
+        self.request_tx
+            .send(PlaybackRequest {
+                opus_frames: frames,
+                text: label,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Playback task is not running"))?;
+        Ok(())
+    }
+
     /// Stop any ongoing playback immediately
     pub fn stop(&self) {
         if self.is_speaking.load(Ordering::Relaxed) {

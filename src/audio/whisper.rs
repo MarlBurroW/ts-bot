@@ -5,7 +5,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 /// Minimum RMS energy threshold to consider audio as speech (not silence/ambient)
-pub const MIN_SPEECH_RMS: f32 = 0.005;
+pub const MIN_SPEECH_RMS: f32 = 0.003;
 
 /// Whisper transcriber for audio STT
 pub struct WhisperTranscriber {
@@ -129,7 +129,21 @@ impl WhisperTranscriber {
         let mut state = self.context.create_state()
             .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {}", e))?;
 
-        state.full(params, samples)
+        // Whisper requires at least 1 second of audio (16000 samples at 16kHz)
+        let min_samples = 32000;
+        let padded_samples;
+        let audio = if samples.len() < min_samples {
+            padded_samples = {
+                let mut v = samples.to_vec();
+                v.resize(min_samples, 0.0);
+                v
+            };
+            &padded_samples
+        } else {
+            samples
+        };
+
+        state.full(params, audio)
             .map_err(|e| anyhow::anyhow!("Transcription failed: {}", e))?;
 
         let num_segments = state.full_n_segments()
@@ -173,12 +187,26 @@ impl WhisperTranscriber {
         params.set_language(Some("fr"));
         params.set_translate(false);
         self.apply_common_params(&mut params);
-        params.set_max_tokens(10); // Very short for wake word
+        params.set_max_tokens(16); // Wake word may need more tokens
 
         let mut state = self.context.create_state()
             .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {}", e))?;
 
-        state.full(params, samples)
+        // Whisper requires at least 1 second of audio (16000 samples at 16kHz)
+        let min_samples = 32000; // 2 seconds at 16kHz
+        let padded_samples;
+        let audio = if samples.len() < min_samples {
+            padded_samples = {
+                let mut v = samples.to_vec();
+                v.resize(min_samples, 0.0);
+                v
+            };
+            &padded_samples
+        } else {
+            samples
+        };
+
+        state.full(params, audio)
             .map_err(|e| anyhow::anyhow!("Wake word detection failed: {}", e))?;
 
         let num_segments = state.full_n_segments()
@@ -225,9 +253,9 @@ mod tests {
 
     #[test]
     fn test_has_speech_energy_barely_above_threshold() {
-        // Very quiet signal just above MIN_SPEECH_RMS (0.005)
+        // Very quiet signal just above MIN_SPEECH_RMS (0.003)
         let signal: Vec<f32> = (0..16000)
-            .map(|i| (i as f32 * 0.1).sin() * 0.008)
+            .map(|i| (i as f32 * 0.1).sin() * 0.005)
             .collect();
         let rms = WhisperTranscriber::rms_energy(&signal);
         assert!(rms > MIN_SPEECH_RMS, "RMS {} should be above threshold {}", rms, MIN_SPEECH_RMS);
@@ -238,7 +266,7 @@ mod tests {
     fn test_has_speech_energy_barely_below_threshold() {
         // Very quiet signal below MIN_SPEECH_RMS
         let signal: Vec<f32> = (0..16000)
-            .map(|i| (i as f32 * 0.1).sin() * 0.003)
+            .map(|i| (i as f32 * 0.1).sin() * 0.002)
             .collect();
         let rms = WhisperTranscriber::rms_energy(&signal);
         assert!(rms < MIN_SPEECH_RMS, "RMS {} should be below threshold {}", rms, MIN_SPEECH_RMS);

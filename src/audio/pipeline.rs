@@ -259,7 +259,81 @@ pub fn parse_samples_md(path: &Path) -> Result<Vec<SampleExpectation>> {
     Ok(expectations)
 }
 
-/// The main trigger word detection pipeline
+/// Wake word detection pipeline using a lightweight Whisper model (e.g. tiny)
+///
+/// Dedicated to wake word checks only — never blocked by transcription.
+pub struct WakeWordPipeline {
+    transcriber: WhisperTranscriber,
+    detector: WakeWordDetector,
+}
+
+impl WakeWordPipeline {
+    /// Create a new wake word pipeline
+    ///
+    /// - `model_path`: path to lightweight Whisper model (e.g., "models/ggml-tiny.bin")
+    /// - `bot_name`: name of the bot for wake word detection (e.g., "marlbot")
+    pub fn new(model_path: impl AsRef<Path>, bot_name: &str) -> Result<Self> {
+        let mut transcriber = WhisperTranscriber::new(model_path)?;
+        // Bias Whisper to recognize the bot name in audio
+        transcriber.set_initial_prompt(&format!("Hey {}.", bot_name));
+        let detector = WakeWordDetector::new(bot_name);
+
+        Ok(Self {
+            transcriber,
+            detector,
+        })
+    }
+
+    /// Quick wake word check on audio samples
+    ///
+    /// Uses the fast `transcribe_wake_word` mode (short token limit).
+    /// Returns (detected, transcription_text).
+    pub fn check_wake_word(&mut self, samples: &[f32]) -> Result<(bool, String)> {
+        if samples.is_empty() {
+            return Ok((false, String::new()));
+        }
+
+        let text = self.transcriber.transcribe_wake_word(samples)?;
+
+        if text.is_empty() {
+            return Ok((false, String::new()));
+        }
+
+        let detected = self.detector.detect(&text);
+        Ok((detected, text))
+    }
+}
+
+/// Transcription pipeline using a larger Whisper model (e.g. small)
+///
+/// Dedicated to full transcription after wake word is detected.
+/// No wake word detection or stripping needed — audio starts after wake word.
+pub struct TranscriptionPipeline {
+    transcriber: WhisperTranscriber,
+}
+
+impl TranscriptionPipeline {
+    /// Create a new transcription pipeline
+    ///
+    /// - `model_path`: path to Whisper model (e.g., "models/ggml-small.bin")
+    pub fn new(model_path: impl AsRef<Path>) -> Result<Self> {
+        let transcriber = WhisperTranscriber::new(model_path)?;
+        Ok(Self { transcriber })
+    }
+
+    /// Transcribe audio samples to text
+    ///
+    /// Returns the transcribed text. No wake word detection or stripping.
+    pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
+        if samples.is_empty() {
+            return Ok(String::new());
+        }
+
+        self.transcriber.transcribe(samples, Some("fr"))
+    }
+}
+
+/// The main trigger word detection pipeline (legacy, used by tests)
 ///
 /// Assembles WhisperTranscriber + WakeWordDetector into a testable pipeline
 /// that can process audio from WAV files or raw samples.
@@ -292,13 +366,6 @@ impl TriggerWordPipeline {
     }
 
     /// Process raw audio samples and return detection results
-    ///
-    /// Segments the audio by silence, transcribes each segment,
-    /// then checks for trigger word and extracts commands.
-    ///
-    /// State machine: when a wake word is detected in a segment but no
-    /// substantive command follows (e.g., "Hey Marlbot" alone), the next
-    /// segment is treated as the command for that wake word.
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<DetectionResult>> {
         let segments = segment_by_silence(
             samples,
@@ -313,7 +380,6 @@ impl TriggerWordPipeline {
             samples.len() as f32 / SAMPLE_RATE as f32
         );
 
-        // First pass: transcribe all segments
         let mut transcriptions: Vec<String> = Vec::new();
         for (i, segment) in segments.iter().enumerate() {
             debug!(
@@ -332,16 +398,14 @@ impl TriggerWordPipeline {
             transcriptions.push(transcription);
         }
 
-        // Second pass: detect wake words with state machine
         let mut results = Vec::new();
-        let mut pending_wake_word: Option<String> = None; // Wake word detected, waiting for command
+        let mut pending_wake_word: Option<String> = None;
 
         for (i, transcription) in transcriptions.iter().enumerate() {
             if transcription.is_empty() {
                 continue;
             }
 
-            // If we have a pending wake word from previous segment, this segment is the command
             if let Some(wake_transcription) = pending_wake_word.take() {
                 info!(
                     "Segment {}: treated as command for previous wake word",
@@ -356,7 +420,6 @@ impl TriggerWordPipeline {
                 continue;
             }
 
-            // Check for wake word in this segment
             let detected = self.detector.detect(transcription);
 
             if detected {
@@ -364,7 +427,6 @@ impl TriggerWordPipeline {
 
                 match command {
                     Some(cmd) if cmd.split_whitespace().count() > 1 => {
-                        // Substantial command found in same segment
                         info!("Segment {}: wake word + command: '{}'", i, cmd);
                         results.push(DetectionResult {
                             detected: true,
@@ -374,8 +436,6 @@ impl TriggerWordPipeline {
                         });
                     }
                     _ => {
-                        // Wake word detected but no meaningful command
-                        // The next segment might be the actual command
                         if i + 1 < transcriptions.len() {
                             info!(
                                 "Segment {}: wake word only, deferring command to next segment",
@@ -383,7 +443,6 @@ impl TriggerWordPipeline {
                             );
                             pending_wake_word = Some(transcription.clone());
                         } else {
-                            // Last segment, no more data
                             results.push(DetectionResult {
                                 detected: true,
                                 transcription: transcription.clone(),
@@ -404,7 +463,6 @@ impl TriggerWordPipeline {
             }
         }
 
-        // Flush any remaining pending wake word
         if let Some(wake_transcription) = pending_wake_word {
             results.push(DetectionResult {
                 detected: true,
@@ -427,12 +485,6 @@ impl TriggerWordPipeline {
     }
 
     /// Transcribe a pre-segmented audio buffer and check for wake word
-    ///
-    /// Unlike `process_audio()`, this does NOT segment by silence.
-    /// Use this for streaming scenarios where audio is already buffered
-    /// by the caller (e.g., TS3 speaker buffer with silence timeout).
-    ///
-    /// Returns a single DetectionResult for the entire buffer.
     pub fn transcribe_and_detect(&mut self, samples: &[f32]) -> Result<DetectionResult> {
         if samples.is_empty() {
             return Ok(DetectionResult {
@@ -470,9 +522,6 @@ impl TriggerWordPipeline {
     }
 
     /// Quick wake word check on audio samples
-    ///
-    /// Uses the fast `transcribe_wake_word` mode (short token limit).
-    /// Returns (detected, transcription_text).
     pub fn check_wake_word(&mut self, samples: &[f32]) -> Result<(bool, String)> {
         if samples.is_empty() {
             return Ok((false, String::new()));

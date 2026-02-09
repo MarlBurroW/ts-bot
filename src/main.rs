@@ -13,7 +13,8 @@ use tsproto_packets::packets::AudioData;
 use base64;
 use ts3_bot::audio::{
     SpeakerBufferManager,
-    TriggerWordPipeline,
+    WakeWordPipeline,
+    TranscriptionPipeline,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -87,19 +88,25 @@ async fn main() -> Result<()> {
         // Initialize audio processing components
         info!("Initializing audio processing components");
 
-        // TODO: Make model path configurable via BotConfig
-        let whisper_model_path = "models/ggml-small.bin";
-        let pipeline = match TriggerWordPipeline::new(whisper_model_path, "marlbot") {
+        // Dual Whisper pipeline: tiny for wake word, small for transcription
+        let wake_pipeline = match WakeWordPipeline::new("models/ggml-tiny.bin", "marlbot") {
             Ok(p) => {
-                info!("TriggerWordPipeline initialized successfully");
+                info!("WakeWordPipeline (tiny) initialized successfully");
                 Some(Arc::new(Mutex::new(p)))
             }
             Err(e) => {
-                warn!("Failed to initialize TriggerWordPipeline: {}. Audio transcription disabled.", e);
-                warn!("To enable audio transcription:");
-                warn!("  1. Create a 'models' directory in the project root");
-                warn!("  2. Download a Whisper model (e.g., ggml-small.bin) to models/");
-                warn!("  3. Download from: https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+                warn!("Failed to initialize WakeWordPipeline: {}. Wake word detection disabled.", e);
+                None
+            }
+        };
+
+        let transcription_pipeline = match TranscriptionPipeline::new("models/ggml-base.bin") {
+            Ok(p) => {
+                info!("TranscriptionPipeline (base) initialized successfully");
+                Some(Arc::new(Mutex::new(p)))
+            }
+            Err(e) => {
+                warn!("Failed to initialize TranscriptionPipeline: {}. Transcription disabled.", e);
                 None
             }
         };
@@ -165,9 +172,6 @@ async fn main() -> Result<()> {
 
                 // Channel for receiving whisper results from background tasks
                 let (whisper_tx, mut whisper_rx) = tokio::sync::mpsc::channel::<WhisperResult>(10);
-
-                // Track if a whisper task is currently running (to avoid stacking)
-                let whisper_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
                 // Shared cache: speaker_id -> (name, uid) resolved from TS3 connection state
                 let client_names: Arc<std::sync::RwLock<HashMap<u64, (String, String)>>> =
@@ -249,6 +253,38 @@ async fn main() -> Result<()> {
                     None
                 };
 
+                // Pre-generate cached wake word confirmation audio
+                let wake_confirmation_frames: Option<Arc<Vec<Vec<u8>>>> = if let Some(ref synth) = tts_synth {
+                    let synth_clone = synth.clone();
+                    match tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
+                        use ts3_bot::audio::decoder::OpusDecoder;
+                        use ts3_bot::audio::encoder::OpusEncoder;
+                        let tts_audio = synth_clone.synthesize("Oui ?", None)?;
+                        let samples_48k = match tts_audio.sample_rate {
+                            48000 => tts_audio.samples,
+                            24000 => OpusDecoder::resample_24k_to_48k(&tts_audio.samples),
+                            other => anyhow::bail!("Unsupported sample rate: {}", other),
+                        };
+                        let mut encoder = OpusEncoder::new()?;
+                        encoder.encode_all(&samples_48k)
+                    }).await {
+                        Ok(Ok(frames)) => {
+                            info!("Cached wake word confirmation audio: {} frames ({:.1}s)", frames.len(), frames.len() as f32 * 0.02);
+                            Some(Arc::new(frames))
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Failed to pre-generate wake confirmation audio: {}. Skipping voice confirmation.", e);
+                            None
+                        }
+                        Err(e) => {
+                            warn!("Wake confirmation task panicked: {}. Skipping voice confirmation.", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 // Spawn TTS processing task (receives requests from WebSocket)
                 if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                     let player_clone = player.clone();
@@ -278,7 +314,17 @@ async fn main() -> Result<()> {
                         Some(result) = whisper_rx.recv() => {
                             match result {
                                 WhisperResult::WakeWordCheck { speaker_id, detected, text } => {
-                                    whisper_busy.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    // Guard: ignore wake word results if speaker is already in listening (active) state.
+                                    // This prevents double triggers from overlapping spawn_blocking tasks.
+                                    {
+                                        let bm_guard = buffer_manager.lock().await;
+                                        if let Some(buf) = bm_guard.get_buffer(speaker_id) {
+                                            if buf.is_active {
+                                                debug!("Ignoring wake word result for speaker {} (already active/listening)", speaker_id);
+                                                continue;
+                                            }
+                                        }
+                                    }
 
                                     if text.is_empty() {
                                         info!("Wake word check for speaker {}: (silence/empty)", speaker_id);
@@ -296,23 +342,35 @@ async fn main() -> Result<()> {
                                         let mut bm = buffer_manager.lock().await;
                                         if let Some(buf) = bm.get_buffer_mut(speaker_id) {
                                             buf.activate();
-                                            // Keep last 3s of audio (may contain command after wake word)
-                                            buf.trim_to_recent(std::time::Duration::from_secs(3));
+                                            // Clear the buffer to prevent double wake word trigger
+                                            buf.clear();
+                                            // Reset wake check timestamp so next check uses fresh audio only
+                                            buf.mark_wake_check();
                                             let name = buf.speaker_name.clone();
                                             drop(bm);
                                             let _ = ts3_msg_tx.try_send(
                                                 format!("J'ecoute, {} ?", name)
                                             );
+
+                                            // Play cached voice confirmation
+                                            if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
+                                                let frames = (**cached).clone();
+                                                let player_ref = player.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
+                                                        warn!("Failed to play wake confirmation: {}", e);
+                                                    }
+                                                });
+                                            }
                                         }
                                     } else {
                                         info!("Wake word check for speaker {}: '{}'", speaker_id, text);
                                     }
                                 }
                                 WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
-                                    whisper_busy.store(false, std::sync::atomic::Ordering::Relaxed);
-
-                                    // Use the pre-extracted command from pipeline, or fall back to raw text
-                                    let command_text = command.unwrap_or_else(|| text.clone());
+                                    // command field is unused in new architecture (no wake word stripping needed)
+                                    let _ = command;
+                                    let command_text = text.clone();
 
                                     if !command_text.trim().is_empty() {
                                         info!("Transcription from {}: '{}' (raw: '{}')", speaker_name, command_text, text);
@@ -353,7 +411,7 @@ async fn main() -> Result<()> {
                         // when Whisper is busy checking wake words for other speakers.
                         // The pipeline mutex (blocking_lock) handles serialization.
                         _ = silence_check_interval.tick() => {
-                            if let Some(ref pipeline_arc) = pipeline {
+                            if let Some(ref tp_arc) = transcription_pipeline {
                                 let mut bm = buffer_manager.lock().await;
                                 let timed_out = bm.check_silence_timeouts();
 
@@ -372,31 +430,28 @@ async fn main() -> Result<()> {
                                         );
 
                                         if !full_audio.is_empty() {
-                                            // Spawn transcription via pipeline in background
-                                            // blocking_lock() will wait if Whisper is busy with another task
-                                            let pipeline_clone = pipeline_arc.clone();
+                                            let tp_clone = tp_arc.clone();
                                             let whisper_tx_clone = whisper_tx.clone();
-                                            whisper_busy.store(true, std::sync::atomic::Ordering::Relaxed);
 
                                             tokio::task::spawn_blocking(move || {
                                                 let audio_len = full_audio.len();
-                                                let mut lock = pipeline_clone.blocking_lock();
-                                                let result = lock.transcribe_and_detect(&full_audio);
+                                                let mut lock = tp_clone.blocking_lock();
+                                                let result = lock.transcribe(&full_audio);
                                                 drop(lock);
 
                                                 match result {
-                                                    Ok(det) => {
+                                                    Ok(text) => {
                                                         let _ = whisper_tx_clone.blocking_send(WhisperResult::Transcription {
                                                             speaker_id,
                                                             speaker_name,
                                                             speaker_uid,
-                                                            text: det.transcription,
-                                                            command: det.command,
+                                                            text,
+                                                            command: None,
                                                             audio_len,
                                                         });
                                                     }
                                                     Err(e) => {
-                                                        tracing::warn!("Pipeline transcription failed: {}", e);
+                                                        tracing::warn!("Transcription failed: {}", e);
                                                         let _ = whisper_tx_clone.blocking_send(WhisperResult::Transcription {
                                                             speaker_id,
                                                             speaker_name,
@@ -548,7 +603,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 SyncStreamItem::Audio(audio_data) => {
-                                    if let Some(ref pipeline_arc) = pipeline {
+                                    if wake_pipeline.is_some() || transcription_pipeline.is_some() {
                                         let audio_inner = audio_data.data();
                                         let data = audio_inner.data();
 
@@ -586,40 +641,39 @@ async fn main() -> Result<()> {
                                         }
 
                                         let is_active = buffer.is_active;
-                                        let wake_check_interval = std::time::Duration::from_millis(1500);
+                                        let wake_check_interval = std::time::Duration::from_millis(800);
 
                                         if !is_active {
-                                            // Only check wake word if not already busy with whisper
-                                            let is_busy = whisper_busy.load(std::sync::atomic::Ordering::Relaxed);
-                                            if !is_busy && buffer.should_check_wake_word(wake_check_interval) {
-                                                buffer.mark_wake_check();
-                                                let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(3));
-                                                drop(bm);
+                                            if let Some(ref wp_arc) = wake_pipeline {
+                                                // Always check wake word — no busy gate!
+                                                // The wake pipeline has its own Mutex.
+                                                if buffer.should_check_wake_word(wake_check_interval) {
+                                                    buffer.mark_wake_check();
+                                                    let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(5));
+                                                    drop(bm);
 
-                                                // Skip Whisper if audio is silence — Whisper hallucinates on silence
-                                                // (e.g. "Merci d'avoir regardé") which can cause false wake triggers
-                                                let energy = ts3_bot::audio::rms_energy(&recent_audio);
-                                                if energy < 0.005 {
-                                                    debug!("Skipping wake word check for speaker {} (silence, RMS={:.6})", speaker_id, energy);
-                                                    continue;
-                                                }
+                                                    // Skip if silence to avoid hallucinations
+                                                    let energy = ts3_bot::audio::rms_energy(&recent_audio);
+                                                    if energy < 0.003 {
+                                                        debug!("Skipping wake word check for speaker {} (silence, RMS={:.6})", speaker_id, energy);
+                                                        continue;
+                                                    }
 
-                                                // Spawn wake word check via pipeline in background
-                                                let pipeline_clone = pipeline_arc.clone();
-                                                let whisper_tx_clone = whisper_tx.clone();
-                                                whisper_busy.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                    let wp_clone = wp_arc.clone();
+                                                    let whisper_tx_clone = whisper_tx.clone();
 
-                                                tokio::task::spawn_blocking(move || {
-                                                    let mut lock = pipeline_clone.blocking_lock();
-                                                    let (detected, text) = lock.check_wake_word(&recent_audio)
-                                                        .unwrap_or_default();
-                                                    drop(lock);
-                                                    let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
-                                                        speaker_id,
-                                                        detected,
-                                                        text,
+                                                    tokio::task::spawn_blocking(move || {
+                                                        let mut lock = wp_clone.blocking_lock();
+                                                        let (detected, text) = lock.check_wake_word(&recent_audio)
+                                                            .unwrap_or_default();
+                                                        drop(lock);
+                                                        let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
+                                                            speaker_id,
+                                                            detected,
+                                                            text,
+                                                        });
                                                     });
-                                                });
+                                                }
                                             }
                                         }
                                         // Active speaker: audio is just buffered

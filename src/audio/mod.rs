@@ -11,4 +11,4 @@ pub use encoder::OpusEncoder;
 pub use buffer::{AudioBuffer, SpeakerBufferManager};
 pub use whisper::WhisperTranscriber;
 pub use wake_word::WakeWordDetector;
-pub use pipeline::{TriggerWordPipeline, DetectionResult, AudioSegment, SampleExpectation, ExpectedMessage, rms_energy};
+pub use pipeline::{WakeWordPipeline, TranscriptionPipeline, TriggerWordPipeline, DetectionResult, AudioSegment, SampleExpectation, ExpectedMessage, rms_energy};
