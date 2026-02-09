@@ -28,7 +28,6 @@ use ts_bookkeeping::{MessageTarget, DisconnectOptions, Reason};
 
 /// Results from background whisper tasks
 enum WhisperResult {
-    WakeWordCheck { speaker_id: u64, detected: bool, text: String },
     Transcription {
         speaker_id: u64,
         speaker_name: String,
@@ -331,51 +330,6 @@ async fn main() -> Result<()> {
                         // Process results from background whisper tasks
                         Some(result) = whisper_rx.recv() => {
                             match result {
-                                WhisperResult::WakeWordCheck { speaker_id, detected, text } => {
-                                    // Guard: ignore if speaker is already active
-                                    {
-                                        let bm_guard = buffer_manager.lock().await;
-                                        if let Some(buf) = bm_guard.get_buffer(speaker_id) {
-                                            if buf.is_active {
-                                                continue;
-                                            }
-                                        }
-                                    }
-
-                                    if detected {
-                                        info!("🎯 Wake word detected from speaker {}! text='{}'", speaker_id, text);
-
-                                        // Interrupt TTS if playing
-                                        if let Some(ref player) = audio_player {
-                                            if player.is_speaking() {
-                                                player.stop();
-                                            }
-                                        }
-
-                                        let mut bm = buffer_manager.lock().await;
-                                        if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                            buf.activate();
-                                            buf.clear();
-                                            buf.mark_wake_check();
-                                            let name = buf.speaker_name.clone();
-                                            drop(bm);
-                                            let _ = ts3_msg_tx.try_send(format!("J'ecoute, {} ?", name));
-
-                                            // Play cached voice confirmation
-                                            if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
-                                                let frames = (**cached).clone();
-                                                let player_ref = player.clone();
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
-                                                        warn!("Failed to play wake confirmation: {}", e);
-                                                    }
-                                                });
-                                            }
-                                        }
-                                    } else if !text.is_empty() {
-                                        info!("Wake word check: '{}' (no match)", text);
-                                    }
-                                }
                                 WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
                                     // command field is unused in new architecture (no wake word stripping needed)
                                     let _ = command;
@@ -699,91 +653,64 @@ async fn main() -> Result<()> {
                                         let is_active = buffer.is_active;
 
                                         if !is_active {
-                                            // Skip wake word checks while TTS is playing (avoid self-trigger)
-                                            if let Some(ref player) = audio_player {
-                                                if player.is_speaking() {
-                                                    drop(bm);
-                                                    continue;
-                                                }
-                                            }
-
-                                            // PRIMARY: Feed audio to Rustpotter inline (μs cost, no API calls)
-                                            // Rustpotter processes every audio frame for instant detection
-                                            let recent_audio = buffer.get_recent_samples(std::time::Duration::from_millis(100));
-                                            let speaker_name_clone = buffer.speaker_name.clone();
-                                            drop(bm);
-
-                                            if !recent_audio.is_empty() {
-                                                let mut rustpotter_detected = false;
-                                                if let Some(ref detector) = wake_detector {
-                                                    let mut det = detector.lock().await;
-                                                    rustpotter_detected = det.process_samples(&recent_audio);
-                                                }
-
-                                                if rustpotter_detected {
-                                                    info!("🎯 Rustpotter detected wake word for {} — confirming with Whisper API", speaker_name_clone);
-
-                                                    // CONFIRMATION: Use Whisper API to transcribe and verify
-                                                    // This only runs when Rustpotter triggers (rare), not continuously
-                                                    let mut bm2 = buffer_manager.lock().await;
-                                                    let confirm_audio = if let Some(buf) = bm2.get_buffer(speaker_id) {
-                                                        buf.get_recent_samples(std::time::Duration::from_secs(3))
-                                                    } else {
-                                                        recent_audio.clone()
-                                                    };
-                                                    drop(bm2);
-
-                                                    if let Some(ref api) = whisper_api {
-                                                        let api_clone = api.clone();
-                                                        let whisper_tx_clone = whisper_tx.clone();
-                                                        tokio::task::spawn_blocking(move || {
-                                                            match api_clone.transcribe(&confirm_audio, Some("fr")) {
-                                                                Ok(text) => {
-                                                                    let text_lower = text.to_lowercase();
-                                                                    let exact_patterns = [
-                                                                        "marlbot", "marl bot", "marbot", "marlbott",
-                                                                        "marlbote", "marlbeth", "marlboth", "marlbet",
-                                                                        "mar bot", "marl'bot", "marlebot", "marle bot",
-                                                                        "l'botte", "l'bot", "marbotte", "marl'botte",
-                                                                        "merlbot", "merlbotte", "marlbeau", "marbeau",
-                                                                    ];
-                                                                    let short_patterns = [
-                                                                        "le bot", "meurt le bot", "le botte",
-                                                                    ];
-                                                                    let detected = exact_patterns.iter().any(|p| text_lower.contains(p))
-                                                                        || (text_lower.len() < 30 && short_patterns.iter().any(|p| text_lower.contains(p)));
-                                                                    info!("Wake word Whisper confirmation: '{}' detected={}", text, detected);
-                                                                    // Accept if EITHER Rustpotter or Whisper confirms
-                                                                    // Rustpotter already triggered, so we trust it even if Whisper doesn't confirm
-                                                                    let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
-                                                                        speaker_id,
-                                                                        detected: true, // Rustpotter triggered — trust it
-                                                                        text,
-                                                                    });
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!("Whisper confirmation failed: {} — trusting Rustpotter detection", e);
-                                                                    // Still activate on Rustpotter alone
-                                                                    let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
-                                                                        speaker_id,
-                                                                        detected: true,
-                                                                        text: "(rustpotter detection)".to_string(),
-                                                                    });
-                                                                }
-                                                            }
-                                                        });
-                                                    } else {
-                                                        // No Whisper API — just trust Rustpotter
-                                                        let _ = whisper_tx.send(WhisperResult::WakeWordCheck {
-                                                            speaker_id,
-                                                            detected: true,
-                                                            text: "(rustpotter detection)".to_string(),
-                                                        }).await;
+                                            if let Some(ref wd_arc) = wake_detector {
+                                                // Skip wake word checks while TTS is playing (avoid self-trigger)
+                                                if let Some(ref player) = audio_player {
+                                                    if player.is_speaking() {
+                                                        drop(bm);
+                                                        continue;
                                                     }
                                                 }
+
+                                                // Get the latest decoded 16kHz samples from this packet
+                                                let recent_audio = buffer.get_recent_samples(std::time::Duration::from_millis(20));
+                                                let speaker_name_clone = buffer.speaker_name.clone();
+                                                drop(bm);
+
+                                                // Feed samples to Rustpotter (inline, ultra fast ~μs)
+                                                let mut wd = wd_arc.lock().await;
+                                                let detected = wd.process_samples(&recent_audio);
+                                                drop(wd);
+
+                                                if detected {
+                                                    info!("🎯 Rustpotter wake word detected from speaker {} ({})!", speaker_id, speaker_name_clone);
+
+                                                    // Interrupt TTS playback if bot is speaking
+                                                    if let Some(ref player) = audio_player {
+                                                        if player.is_speaking() {
+                                                            info!("Interrupting TTS playback (wake word)");
+                                                            player.stop();
+                                                        }
+                                                    }
+
+                                                    let mut bm2 = buffer_manager.lock().await;
+                                                    if let Some(buf) = bm2.get_buffer_mut(speaker_id) {
+                                                        buf.activate();
+                                                        buf.clear();
+                                                        buf.mark_wake_check();
+                                                        let name = buf.speaker_name.clone();
+                                                        drop(bm2);
+                                                        let _ = ts3_msg_tx.try_send(
+                                                            format!("J'ecoute, {} ?", name)
+                                                        );
+
+                                                        // Play cached voice confirmation
+                                                        if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
+                                                            let frames = (**cached).clone();
+                                                            let player_ref = player.clone();
+                                                            tokio::spawn(async move {
+                                                                if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
+                                                                    warn!("Failed to play wake confirmation: {}", e);
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+
+                                                    // Reset detector state after detection
+                                                    let mut wd = wd_arc.lock().await;
+                                                    wd.reset();
+                                                }
                                             }
-                                        } else {
-                                            drop(bm);
                                         }
                                         // Active speaker: audio is just buffered
                                         // Silence detection is handled by the periodic timer
