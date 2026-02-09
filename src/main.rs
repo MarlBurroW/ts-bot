@@ -28,6 +28,7 @@ use ts_bookkeeping::{MessageTarget, DisconnectOptions, Reason};
 
 /// Results from background whisper tasks
 enum WhisperResult {
+    WakeWordCheck { speaker_id: u64, detected: bool, text: String },
     Transcription {
         speaker_id: u64,
         speaker_name: String,
@@ -330,6 +331,40 @@ async fn main() -> Result<()> {
                         // Process results from background whisper tasks
                         Some(result) = whisper_rx.recv() => {
                             match result {
+                                WhisperResult::WakeWordCheck { speaker_id, detected, text } => {
+                                    {
+                                        let bm_guard = buffer_manager.lock().await;
+                                        if let Some(buf) = bm_guard.get_buffer(speaker_id) {
+                                            if buf.is_active { continue; }
+                                        }
+                                    }
+                                    if detected {
+                                        info!("🎯 Wake word detected from speaker {}! text='{}'", speaker_id, text);
+                                        if let Some(ref player) = audio_player {
+                                            if player.is_speaking() { player.stop(); }
+                                        }
+                                        let mut bm = buffer_manager.lock().await;
+                                        if let Some(buf) = bm.get_buffer_mut(speaker_id) {
+                                            buf.activate();
+                                            buf.clear();
+                                            buf.mark_wake_check();
+                                            let name = buf.speaker_name.clone();
+                                            drop(bm);
+                                            let _ = ts3_msg_tx.try_send(format!("J'ecoute, {} ?", name));
+                                            if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
+                                                let frames = (**cached).clone();
+                                                let player_ref = player.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
+                                                        warn!("Failed to play wake confirmation: {}", e);
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    } else if !text.is_empty() {
+                                        info!("Wake word check: '{}' (no match)", text);
+                                    }
+                                }
                                 WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
                                     // command field is unused in new architecture (no wake word stripping needed)
                                     let _ = command;
@@ -651,10 +686,12 @@ async fn main() -> Result<()> {
                                         }
 
                                         let is_active = buffer.is_active;
+                                        let wake_check_interval = std::time::Duration::from_millis(1500);
 
                                         if !is_active {
-                                            if let Some(ref wd_arc) = wake_detector {
-                                                // Skip wake word checks while TTS is playing (avoid self-trigger)
+                                            // Wake word detection via Whisper API
+                                            if whisper_api.is_some() {
+                                                // Skip while TTS is playing
                                                 if let Some(ref player) = audio_player {
                                                     if player.is_speaking() {
                                                         drop(bm);
@@ -662,54 +699,55 @@ async fn main() -> Result<()> {
                                                     }
                                                 }
 
-                                                // Get the latest decoded 16kHz samples from this packet
-                                                let recent_audio = buffer.get_recent_samples(std::time::Duration::from_millis(20));
-                                                let speaker_name_clone = buffer.speaker_name.clone();
-                                                drop(bm);
+                                                if buffer.should_check_wake_word(wake_check_interval) {
+                                                    buffer.mark_wake_check();
+                                                    let recent_audio = buffer.get_recent_samples(std::time::Duration::from_secs(2));
+                                                    drop(bm);
 
-                                                // Feed samples to Rustpotter (inline, ultra fast ~μs)
-                                                let mut wd = wd_arc.lock().await;
-                                                let detected = wd.process_samples(&recent_audio);
-                                                drop(wd);
+                                                    // Skip silence
+                                                    let energy = ts3_bot::audio::rms_energy(&recent_audio);
+                                                    if energy < 0.008 { continue; }
 
-                                                if detected {
-                                                    info!("🎯 Rustpotter wake word detected from speaker {} ({})!", speaker_id, speaker_name_clone);
+                                                    let spk_name = {
+                                                        let names = client_names.read().unwrap_or_else(|e| e.into_inner());
+                                                        names.get(&speaker_id).map(|(n, _)| n.clone()).unwrap_or_else(|| format!("Speaker_{}", speaker_id))
+                                                    };
+                                                    info!("Wake word check for {} (rms={:.4}, samples={})",
+                                                        spk_name, energy, recent_audio.len());
 
-                                                    // Interrupt TTS playback if bot is speaking
-                                                    if let Some(ref player) = audio_player {
-                                                        if player.is_speaking() {
-                                                            info!("Interrupting TTS playback (wake word)");
-                                                            player.stop();
-                                                        }
-                                                    }
-
-                                                    let mut bm2 = buffer_manager.lock().await;
-                                                    if let Some(buf) = bm2.get_buffer_mut(speaker_id) {
-                                                        buf.activate();
-                                                        buf.clear();
-                                                        buf.mark_wake_check();
-                                                        let name = buf.speaker_name.clone();
-                                                        drop(bm2);
-                                                        let _ = ts3_msg_tx.try_send(
-                                                            format!("J'ecoute, {} ?", name)
-                                                        );
-
-                                                        // Play cached voice confirmation
-                                                        if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
-                                                            let frames = (**cached).clone();
-                                                            let player_ref = player.clone();
-                                                            tokio::spawn(async move {
-                                                                if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
-                                                                    warn!("Failed to play wake confirmation: {}", e);
+                                                    if let Some(ref api) = whisper_api {
+                                                        let api_clone = api.clone();
+                                                        let whisper_tx_clone = whisper_tx.clone();
+                                                        tokio::task::spawn_blocking(move || {
+                                                            match api_clone.transcribe(&recent_audio, Some("fr")) {
+                                                                Ok(text) => {
+                                                                    let text_lower = text.to_lowercase();
+                                                                    let exact_patterns = [
+                                                                        "marlbot", "marl bot", "marbot", "marlbott",
+                                                                        "marlbote", "marlbeth", "marlboth", "marlbet",
+                                                                        "mar bot", "marl'bot", "marlebot", "marle bot",
+                                                                        "l'botte", "l'bot", "marbotte", "marl'botte",
+                                                                        "merlbot", "merlbotte", "marlbeau", "marbeau",
+                                                                    ];
+                                                                    let short_patterns = [
+                                                                        "le bot", "meurt le bot", "le botte",
+                                                                    ];
+                                                                    let detected = exact_patterns.iter().any(|p| text_lower.contains(p))
+                                                                        || (text_lower.len() < 30 && short_patterns.iter().any(|p| text_lower.contains(p)));
+                                                                    info!("Wake word API: '{}' detected={}", text, detected);
+                                                                    let _ = whisper_tx_clone.blocking_send(WhisperResult::WakeWordCheck {
+                                                                        speaker_id, detected, text,
+                                                                    });
                                                                 }
-                                                            });
-                                                        }
+                                                                Err(e) => warn!("Whisper API wake check failed: {}", e),
+                                                            }
+                                                        });
                                                     }
-
-                                                    // Reset detector state after detection
-                                                    let mut wd = wd_arc.lock().await;
-                                                    wd.reset();
+                                                } else {
+                                                    drop(bm);
                                                 }
+                                            } else {
+                                                drop(bm);
                                             }
                                         }
                                         // Active speaker: audio is just buffered
