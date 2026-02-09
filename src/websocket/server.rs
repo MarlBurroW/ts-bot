@@ -192,11 +192,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     con.get_state().ok().map(|state| {
                                         let own_client_id = state.own_client.0;
                                         let channels: Vec<serde_json::Value> = state.channels.iter().map(|(id, ch)| {
-                                            serde_json::json!({
+                                            let mut ch_json = serde_json::json!({
                                                 "id": id.0,
                                                 "name": ch.name,
-                                                "parent_id": ch.parent.0
-                                            })
+                                                "parent_id": ch.parent.0,
+                                                "order": ch.order.0,
+                                                "codec": format!("{:?}", ch.codec),
+                                                "forced_silence": ch.forced_silence,
+                                                "subscribed": ch.subscribed
+                                            });
+                                            if let Some(ref topic) = ch.topic {
+                                                ch_json["topic"] = serde_json::json!(topic);
+                                            }
+                                            if let Some(ref max_clients) = ch.max_clients {
+                                                ch_json["max_clients"] = serde_json::json!(format!("{:?}", max_clients));
+                                            }
+                                            if let Some(has_pw) = ch.has_password {
+                                                ch_json["has_password"] = serde_json::json!(has_pw);
+                                            }
+                                            if let Some(talk_power) = ch.needed_talk_power {
+                                                ch_json["needed_talk_power"] = serde_json::json!(talk_power);
+                                            }
+                                            if let Some(ref codec_quality) = ch.codec_quality {
+                                                ch_json["codec_quality"] = serde_json::json!(codec_quality);
+                                            }
+                                            ch_json
                                         }).collect();
                                         let clients: Vec<serde_json::Value> = state.clients.iter().map(|(id, cl)| {
                                             let mut client_json = serde_json::json!({
@@ -217,6 +237,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             }
                                             if !cl.description.is_empty() {
                                                 client_json["description"] = serde_json::json!(cl.description);
+                                            }
+                                            client_json["database_id"] = serde_json::json!(cl.database_id.0);
+                                            if !cl.country_code.is_empty() {
+                                                client_json["country_code"] = serde_json::json!(cl.country_code);
+                                            }
+                                            client_json["channel_group"] = serde_json::json!(cl.channel_group.0);
+                                            let sg: Vec<u64> = cl.server_groups.iter().map(|g| g.0).collect();
+                                            if !sg.is_empty() {
+                                                client_json["server_groups"] = serde_json::json!(sg);
+                                            }
+                                            client_json["is_channel_commander"] = serde_json::json!(cl.is_channel_commander);
+                                            if cl.talk_power_granted {
+                                                client_json["talk_power_granted"] = serde_json::json!(true);
                                             }
                                             client_json
                                         }).collect();
@@ -394,6 +427,42 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                     Err(e) => {
                                         let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Move client failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::GetServerInfo { command_id } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                match sender.with_connection(|con| {
+                                    con.get_state().ok().map(|state| {
+                                        let server = &state.server;
+                                        let client_count = state.clients.len();
+                                        let channel_count = state.channels.len();
+                                        serde_json::json!({
+                                            "name": server.name,
+                                            "version": server.version,
+                                            "platform": server.platform,
+                                            "max_clients": server.max_clients,
+                                            "created": server.created.to_string(),
+                                            "welcome_message": server.welcome_message,
+                                            "server_id": server.id,
+                                            "current_clients": client_count,
+                                            "current_channels": channel_count,
+                                            "codec_encryption_mode": format!("{:?}", server.codec_encryption_mode),
+                                        })
+                                    })
+                                }).await {
+                                    Ok(Some(data)) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_success_with_data(command_id, data));
+                                    }
+                                    Ok(None) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Failed to read TS3 server info".to_string()));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("TS3 connection error: {:?}", e)));
                                     }
                                 }
                             } else {

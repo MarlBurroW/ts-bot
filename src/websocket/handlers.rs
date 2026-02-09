@@ -24,6 +24,8 @@ pub enum CommandAction {
     MoveClient { command_id: Option<String>, client_id: u64, channel_id: u64, password: Option<String> },
     /// Change the bot's nickname
     SetNickname { command_id: Option<String>, nickname: String },
+    /// Query TS3 server info (name, version, platform, max_clients, etc.)
+    GetServerInfo { command_id: Option<String> },
 }
 
 /// Handle incoming WebSocket command
@@ -96,6 +98,10 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::SetNickname { command_id, nickname } => (
             WebSocketEvent::command_success(command_id.clone(), Some("Setting nickname...".to_string())),
             CommandAction::SetNickname { command_id, nickname },
+        ),
+        WebSocketCommand::GetServerInfo { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetServerInfo { command_id },
         ),
     }
 }
