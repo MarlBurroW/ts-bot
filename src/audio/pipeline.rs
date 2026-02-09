@@ -274,8 +274,7 @@ impl WakeWordPipeline {
     /// - `bot_name`: name of the bot for wake word detection (e.g., "marlbot")
     pub fn new(model_path: impl AsRef<Path>, bot_name: &str) -> Result<Self> {
         let mut transcriber = WhisperTranscriber::new(model_path)?;
-        // Bias Whisper to recognize the bot name in audio
-        transcriber.set_initial_prompt(&format!("Hey {}.", bot_name));
+        transcriber.set_initial_prompt("Hey marlbot.");
         let detector = WakeWordDetector::new(bot_name);
 
         Ok(Self {

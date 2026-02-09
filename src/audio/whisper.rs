@@ -53,6 +53,16 @@ impl WhisperTranscriber {
     }
 
     /// Check if audio has enough energy to be speech
+    /// Strict energy check for wake word detection (higher threshold to avoid hallucinations)
+    pub fn has_speech_energy_strict(samples: &[f32]) -> bool {
+        let rms = Self::rms_energy(samples);
+        let has_energy = rms > 0.008;
+        if !has_energy {
+            debug!("Audio below strict speech threshold: RMS={:.6} (threshold=0.008)", rms);
+        }
+        has_energy
+    }
+
     pub fn has_speech_energy(samples: &[f32]) -> bool {
         let rms = Self::rms_energy(samples);
         let has_energy = rms > MIN_SPEECH_RMS;
@@ -177,8 +187,8 @@ impl WhisperTranscriber {
             return Ok(String::new());
         }
 
-        // Skip silent/ambient noise audio
-        if !Self::has_speech_energy(samples) {
+        // Skip silent/ambient noise audio (strict threshold for wake word)
+        if !Self::has_speech_energy_strict(samples) {
             return Ok(String::new());
         }
 
@@ -192,8 +202,8 @@ impl WhisperTranscriber {
         let mut state = self.context.create_state()
             .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {}", e))?;
 
-        // Whisper requires at least 1 second of audio (16000 samples at 16kHz)
-        let min_samples = 32000; // 2 seconds at 16kHz
+        // Pad to at least 1 second for Whisper minimum requirement
+        let min_samples = 16000; // 1 second at 16kHz
         let padded_samples;
         let audio = if samples.len() < min_samples {
             padded_samples = {

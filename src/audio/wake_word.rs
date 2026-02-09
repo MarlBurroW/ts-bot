@@ -84,6 +84,15 @@ impl WakeWordDetector {
             "mel but".to_string(),
             "marl bat".to_string(),
             "marl batt".to_string(),
+            // French-ified variations from tiny model
+            "malbête".to_string(),
+            "malbette".to_string(),
+            "malbete".to_string(),
+            "aimalbette".to_string(),
+            "aimalbete".to_string(),
+            "aimalbête".to_string(),
+            "aimal bête".to_string(),
+            "aimal bette".to_string(),
         ];
 
         info!("Wake word detector initialized with variations: {:?}", wake_words);

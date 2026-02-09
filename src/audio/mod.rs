@@ -5,6 +5,7 @@ pub mod whisper;
 pub mod wake_word;
 pub mod pipeline;
 pub mod wav_loader;
+pub mod whisper_api;
 
 pub use decoder::OpusDecoder;
 pub use encoder::OpusEncoder;

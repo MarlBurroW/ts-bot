@@ -16,6 +16,7 @@ use ts3_bot::audio::{
     WakeWordPipeline,
     TranscriptionPipeline,
 };
+use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -100,9 +101,9 @@ async fn main() -> Result<()> {
             }
         };
 
-        let transcription_pipeline = match TranscriptionPipeline::new("models/ggml-base.bin") {
+        let transcription_pipeline = match TranscriptionPipeline::new("models/ggml-small.bin") {
             Ok(p) => {
-                info!("TranscriptionPipeline (base) initialized successfully");
+                info!("TranscriptionPipeline (small) initialized successfully");
                 Some(Arc::new(Mutex::new(p)))
             }
             Err(e) => {
@@ -110,6 +111,14 @@ async fn main() -> Result<()> {
                 None
             }
         };
+
+        // Initialize Whisper API transcriber (uses same key as TTS)
+        let whisper_api: Option<Arc<WhisperApiTranscriber>> = config.tts_api_key.as_ref()
+            .filter(|k| !k.is_empty())
+            .map(|key| {
+                info!("WhisperAPI transcriber initialized (using TTS_API_KEY)");
+                Arc::new(WhisperApiTranscriber::new(key.clone()))
+            });
 
         let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
 
@@ -432,12 +441,39 @@ async fn main() -> Result<()> {
                                         if !full_audio.is_empty() {
                                             let tp_clone = tp_arc.clone();
                                             let whisper_tx_clone = whisper_tx.clone();
+                                            let api_clone = whisper_api.clone();
 
                                             tokio::task::spawn_blocking(move || {
                                                 let audio_len = full_audio.len();
-                                                let mut lock = tp_clone.blocking_lock();
-                                                let result = lock.transcribe(&full_audio);
-                                                drop(lock);
+
+                                                // Try API transcription first, fall back to local
+                                                let result = if let Some(ref api) = api_clone {
+                                                    match api.transcribe(&full_audio, Some("fr")) {
+                                                        Ok(text) if !text.is_empty() => {
+                                                            info!("WhisperAPI transcription succeeded");
+                                                            Ok(text)
+                                                        }
+                                                        Ok(_) => {
+                                                            warn!("WhisperAPI returned empty, falling back to local Whisper");
+                                                            let mut lock = tp_clone.blocking_lock();
+                                                            let r = lock.transcribe(&full_audio);
+                                                            drop(lock);
+                                                            r
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("WhisperAPI failed: {}, falling back to local Whisper", e);
+                                                            let mut lock = tp_clone.blocking_lock();
+                                                            let r = lock.transcribe(&full_audio);
+                                                            drop(lock);
+                                                            r
+                                                        }
+                                                    }
+                                                } else {
+                                                    let mut lock = tp_clone.blocking_lock();
+                                                    let r = lock.transcribe(&full_audio);
+                                                    drop(lock);
+                                                    r
+                                                };
 
                                                 match result {
                                                     Ok(text) => {
@@ -654,7 +690,7 @@ async fn main() -> Result<()> {
 
                                                     // Skip if silence to avoid hallucinations
                                                     let energy = ts3_bot::audio::rms_energy(&recent_audio);
-                                                    if energy < 0.003 {
+                                                    if energy < 0.008 {
                                                         debug!("Skipping wake word check for speaker {} (silence, RMS={:.6})", speaker_id, energy);
                                                         continue;
                                                     }
