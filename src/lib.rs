@@ -5,5 +5,5 @@ pub mod websocket;
 
 // Re-export commonly used types
 pub use models::{BotConfig, WebSocketEvent, WebSocketCommand};
-pub use audio::{TranscriptionPipeline, TriggerWordPipeline, DetectionResult, AudioSegment, SampleExpectation, ExpectedMessage};
-pub use tts::{TtsSynthesizer, TtsAudio, AudioPlayer, KokoroSynthesizer, HttpTtsSynthesizer};
+pub use audio::TranscriptionPipeline;
+pub use tts::{TtsSynthesizer, TtsAudio, AudioPlayer, HttpTtsSynthesizer};

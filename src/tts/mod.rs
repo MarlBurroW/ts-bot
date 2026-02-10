@@ -1,5 +1,4 @@
 pub mod http;
-pub mod kokoro;
 pub mod playback;
 
 use anyhow::Result;
@@ -34,5 +33,4 @@ pub trait TtsSynthesizer: Send + Sync {
 }
 
 pub use http::HttpTtsSynthesizer;
-pub use kokoro::KokoroSynthesizer;
 pub use playback::AudioPlayer;
