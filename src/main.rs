@@ -583,6 +583,7 @@ async fn main() -> Result<()> {
                                                          • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
+                                                         • [b]!who[/b] — qui est dans ton channel ?\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string()
                                                     );
@@ -617,6 +618,59 @@ async fn main() -> Result<()> {
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
                                                     ));
+                                                } else if msg_lower.contains("!who") {
+                                                    // Show who's in the same channel as the sender
+                                                    let sender_id = invoker.id.0 as u64;
+                                                    let mut sender_for_who = ts3_sender.clone();
+                                                    let tx_who = ts3_msg_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        let result = sender_for_who.with_connection(move |con| {
+                                                            if let Ok(state) = con.get_state() {
+                                                                // Find sender's channel
+                                                                let sender_cid = tsclientlib::ClientId(sender_id as u16);
+                                                                let channel_id = state.clients.get(&sender_cid)
+                                                                    .map(|c| c.channel);
+                                                                if let Some(ch_id) = channel_id {
+                                                                    let ch_name = state.channels.get(&ch_id)
+                                                                        .map(|c| c.name.clone())
+                                                                        .unwrap_or_else(|| format!("Channel #{}", ch_id.0));
+                                                                    let mut lines: Vec<String> = Vec::new();
+                                                                    for c in state.clients.values() {
+                                                                        if c.channel != ch_id { continue; }
+                                                                        let mut flags = Vec::new();
+                                                                        if c.input_muted { flags.push("🔇mic"); }
+                                                                        if c.output_muted { flags.push("🔇son"); }
+                                                                        if c.away_message.as_ref().map_or(false, |m| !m.is_empty()) {
+                                                                            flags.push("💤away");
+                                                                        }
+                                                                        let flag_str = if flags.is_empty() {
+                                                                            String::new()
+                                                                        } else {
+                                                                            format!(" ({})", flags.join(", "))
+                                                                        };
+                                                                        lines.push(format!("• {}{}", c.name, flag_str));
+                                                                    }
+                                                                    let count = lines.len();
+                                                                    Some(format!(
+                                                                        "👥 [b]{}[/b] — {} personne{}\n{}",
+                                                                        ch_name,
+                                                                        count,
+                                                                        if count > 1 { "s" } else { "" },
+                                                                        lines.join("\n")
+                                                                    ))
+                                                                } else {
+                                                                    Some("❌ Impossible de trouver ton channel.".to_string())
+                                                                }
+                                                            } else {
+                                                                Some("❌ État TS3 indisponible.".to_string())
+                                                            }
+                                                        }).await;
+                                                        match result {
+                                                            Ok(Some(msg)) => { let _ = tx_who.try_send(msg); }
+                                                            Ok(None) => { let _ = tx_who.try_send("❌ Erreur interne.".to_string()); }
+                                                            Err(e) => { let _ = tx_who.try_send(format!("❌ Erreur: {}", e)); }
+                                                        }
+                                                    });
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
