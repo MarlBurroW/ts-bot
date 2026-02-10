@@ -880,6 +880,7 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower.starts_with("!who") {
                                                     // Show who's in the same channel as the sender
                                                     let sender_id = invoker.id.0 as u64;
+                                                    let sender_name_who = invoker.name.to_string();
                                                     let mut sender_for_who = ts3_sender.clone();
                                                     let tx_who = ts3_msg_tx.clone();
                                                     let rt_who = reply_target;
@@ -887,10 +888,15 @@ async fn main() -> Result<()> {
                                                     tokio::spawn(async move {
                                                         let result = sender_for_who.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
-                                                                // Find sender's channel
+                                                                // Find sender's channel (try ClientId first, then name fallback)
                                                                 let sender_cid = tsclientlib::ClientId(sender_id as u16);
                                                                 let channel_id = state.clients.get(&sender_cid)
-                                                                    .map(|c| c.channel);
+                                                                    .map(|c| c.channel)
+                                                                    .or_else(|| {
+                                                                        state.clients.values()
+                                                                            .find(|c| c.name == sender_name_who)
+                                                                            .map(|c| c.channel)
+                                                                    });
                                                                 if let Some(ch_id) = channel_id {
                                                                     let ch_name = state.channels.get(&ch_id)
                                                                         .map(|c| c.name.clone())
@@ -997,6 +1003,7 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower.starts_with("!come") || msg_lower.starts_with("!viens") {
                                                     // Move the bot to the sender's channel
                                                     let sender_id = invoker.id.0 as u64;
+                                                    let sender_name_come = invoker.name.to_string();
                                                     let mut sender_for_come = ts3_sender.clone();
                                                     let tx_come = ts3_msg_tx.clone();
                                                     let rt_come = reply_target;
@@ -1006,7 +1013,15 @@ async fn main() -> Result<()> {
                                                             if let Ok(state) = con.get_state() {
                                                                 let sender_cid = tsclientlib::ClientId(sender_id as u16);
                                                                 let bot_channel = state.clients.get(&state.own_client).map(|c| c.channel);
-                                                                let sender_channel = state.clients.get(&sender_cid).map(|c| c.channel);
+                                                                // Try direct ClientId lookup first, then fallback to name search
+                                                                let sender_channel = state.clients.get(&sender_cid)
+                                                                    .map(|c| c.channel)
+                                                                    .or_else(|| {
+                                                                        // Fallback: search by name (handles reconnect with new ClientId)
+                                                                        state.clients.values()
+                                                                            .find(|c| c.name == sender_name_come)
+                                                                            .map(|c| c.channel)
+                                                                    });
                                                                 match (bot_channel, sender_channel) {
                                                                     (Some(bot_ch), Some(sender_ch)) if bot_ch == sender_ch => {
                                                                         let ch_name = state.channels.get(&bot_ch).map(|c| c.name.clone()).unwrap_or_default();
