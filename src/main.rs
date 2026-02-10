@@ -381,6 +381,7 @@ async fn main() -> Result<()> {
                     let player_clone = player.clone();
                     let synth_clone = synth.clone();
                     let tts_chat_tx = ts3_msg_tx.clone();
+                    let tts_event_tx = event_tx_clone.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
@@ -391,12 +392,18 @@ async fn main() -> Result<()> {
                                 format!("🤖 {}", request.text)
                             };
                             let _ = tts_chat_tx.try_send(OutgoingMessage::channel(display_text));
+                            // Emit speak_started event
+                            let _ = tts_event_tx.send(WebSocketEvent::speak_started(request.text.clone()));
+                            let start = std::time::Instant::now();
                             if let Err(e) = player_clone
-                                .speak(request.text, request.voice, request.speed, synth_clone.clone())
+                                .speak(request.text.clone(), request.voice, request.speed, synth_clone.clone())
                                 .await
                             {
                                 warn!("TTS speak failed: {}", e);
                             }
+                            // Emit speak_completed event
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            let _ = tts_event_tx.send(WebSocketEvent::speak_completed(request.text, duration_ms));
                         }
                     });
                 }
@@ -985,13 +992,18 @@ async fn main() -> Result<()> {
                                                         let tx_tts = ts3_msg_tx.clone();
                                                         let rt_tts = reply_target.clone();
                                                         let rs_tts = reply_sender_id;
+                                                        let evt_tts = event_tx_clone.clone();
                                                         tokio::spawn(async move {
+                                                            let _ = evt_tts.send(WebSocketEvent::speak_started(tts_text.clone()));
+                                                            let start = std::time::Instant::now();
                                                             match player_ref.speak(tts_text.clone(), tts_voice, tts_speed, synth_ref).await {
                                                                 Ok(_) => {}
                                                                 Err(e) => {
                                                                     let _ = tx_tts.try_send(OutgoingMessage::reply(format!("❌ TTS error: {}", e), &rt_tts, rs_tts));
                                                                 }
                                                             }
+                                                            let duration_ms = start.elapsed().as_millis() as u64;
+                                                            let _ = evt_tts.send(WebSocketEvent::speak_completed(tts_text, duration_ms));
                                                         });
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
