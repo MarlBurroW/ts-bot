@@ -90,6 +90,8 @@ async fn main() -> Result<()> {
 
     info!(?config, "TS3 Bot starting with configuration");
 
+    let start_time = std::time::Instant::now();
+
     // Create broadcast channel for TS3 events -> WebSocket clients
     // Capacity of 100 messages in buffer
     let (event_tx, _event_rx) = broadcast::channel::<WebSocketEvent>(100);
@@ -718,12 +720,26 @@ async fn main() -> Result<()> {
                                                     };
                                                     let speak_str = if speaking { "Oui 🔊" } else { "Non" };
 
+                                                    let uptime = start_time.elapsed();
+                                                    let uptime_secs = uptime.as_secs();
+                                                    let uptime_str = if uptime_secs < 60 {
+                                                        format!("{}s", uptime_secs)
+                                                    } else if uptime_secs < 3600 {
+                                                        format!("{}m {}s", uptime_secs / 60, uptime_secs % 60)
+                                                    } else if uptime_secs < 86400 {
+                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
+                                                    } else {
+                                                        format!("{}j {}h {}m", uptime_secs / 86400, (uptime_secs % 86400) / 3600, (uptime_secs % 3600) / 60)
+                                                    };
+
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!(
                                                         "📊 [b]Status Marlbot[/b]\n\
+                                                         • Uptime : {}\n\
                                                          • Écoute : {}\n\
                                                          • Parle : {}\n\
                                                          • TTS : {}\n\
                                                          • Whisper : {}",
+                                                        uptime_str,
                                                         listen_str,
                                                         speak_str,
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
