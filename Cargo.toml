@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+rand = "0.8"
 # TS3 client protocol
 tsclientlib = { version = "0.2", features = ["unstable"] }
 ts-bookkeeping = "0.1"

@@ -779,6 +779,8 @@ async fn main() -> Result<()> {
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
                                                          • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
+                                                         • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
+                                                         • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -826,6 +828,7 @@ async fn main() -> Result<()> {
                                                     let tx_status = ts3_msg_tx.clone();
                                                     let rt_status = reply_target;
                                                     let rs_status = reply_sender_id;
+                                                    let bm_status = buffer_manager.clone();
                                                     tokio::spawn(async move {
                                                         let channel_info = sender_for_status.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
@@ -858,7 +861,8 @@ async fn main() -> Result<()> {
                                                              • Volume : {}%\n\
                                                              • TTS : {}\n\
                                                              • Whisper : {}\n\
-                                                             • Greetings : {}",
+                                                             • Greetings : {}\n\
+                                                             • Silence timeout : {}ms",
                                                             channel_str,
                                                             uptime_str,
                                                             listen_str,
@@ -866,7 +870,11 @@ async fn main() -> Result<()> {
                                                             vol,
                                                             tts_str,
                                                             whisper_str,
-                                                            greet_str
+                                                            greet_str,
+                                                            {
+                                                                let bm = bm_status.lock().await;
+                                                                bm.silence_timeout_ms()
+                                                            }
                                                         ), &rt_status, rs_status));
                                                     });
                                                 } else if msg_lower.starts_with("!who") {
@@ -1174,6 +1182,91 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id,
                                                         ));
                                                     }
+                                                } else if msg_lower.starts_with("!timeout") {
+                                                    let parts: Vec<&str> = msg_lower.split_whitespace().collect();
+                                                    if parts.len() >= 2 {
+                                                        if let Ok(ms) = parts[1].parse::<u64>() {
+                                                            let clamped = ms.clamp(500, 10000);
+                                                            let mut bm = buffer_manager.lock().await;
+                                                            bm.set_silence_timeout_ms(clamped);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("⏱️ Silence timeout : {}ms", clamped),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "❌ Usage: !timeout <ms> (500-10000)".to_string(),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        }
+                                                    } else {
+                                                        let bm = buffer_manager.lock().await;
+                                                        let current = bm.silence_timeout_ms();
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("⏱️ Silence timeout : {}ms — !timeout <ms> pour changer (500-10000)", current),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    }
+                                                } else if msg_lower.starts_with("!roll") || msg_lower.starts_with("!dice") {
+                                                    // Dice roller: !roll [NdS[+/-M]] — default 1d6
+                                                    let args = message.split_whitespace().skip(1).collect::<Vec<&str>>().join(" ");
+                                                    let dice_str = if args.trim().is_empty() { "1d6" } else { args.trim() };
+
+                                                    // Parse dice notation: NdS+M or NdS-M
+                                                    let result = (|| -> std::result::Result<String, String> {
+                                                        let s = dice_str.to_lowercase();
+
+                                                        // Check for simple number (e.g., !roll 20 = random 1-20)
+                                                        if let Ok(max) = s.parse::<i64>() {
+                                                            if max < 1 || max > 1000000 { return Err("Nombre entre 1 et 1000000 svp".to_string()); }
+                                                            use rand::Rng;
+                                                            let val = rand::thread_rng().gen_range(1..=max);
+                                                            return Ok(format!("🎲 1-{} → [b]{}[/b]", max, val));
+                                                        }
+
+                                                        // Parse NdS[+/-M]
+                                                        let d_pos = s.find('d').ok_or("Format: NdS, NdS+M, NdS-M (ex: 2d6, 1d20+3)")?;
+                                                        let count_str = &s[..d_pos];
+                                                        let count: u32 = if count_str.is_empty() { 1 } else {
+                                                            count_str.parse().map_err(|_| "Nombre de dés invalide")?
+                                                        };
+                                                        if count < 1 || count > 100 { return Err("1 à 100 dés max".to_string()); }
+
+                                                        let rest = &s[d_pos+1..];
+                                                        // Split on + or -
+                                                        let (sides_str, modifier) = if let Some(pos) = rest.find('+') {
+                                                            (&rest[..pos], rest[pos+1..].parse::<i64>().map_err(|_| "Modificateur invalide")?)
+                                                        } else if let Some(pos) = rest[1..].find('-') {
+                                                            let pos = pos + 1; // offset because we started searching at index 1
+                                                            (&rest[..pos], -(rest[pos+1..].parse::<i64>().map_err(|_| "Modificateur invalide")?))
+                                                        } else {
+                                                            (rest, 0i64)
+                                                        };
+                                                        let sides: u32 = sides_str.parse().map_err(|_| "Nombre de faces invalide")?;
+                                                        if sides < 2 || sides > 1000 { return Err("2 à 1000 faces".to_string()); }
+
+                                                        use rand::Rng;
+                                                        let mut rng = rand::thread_rng();
+                                                        let rolls: Vec<u32> = (0..count).map(|_| rng.gen_range(1..=sides)).collect();
+                                                        let sum: i64 = rolls.iter().map(|&r| r as i64).sum::<i64>() + modifier;
+
+                                                        if count == 1 && modifier == 0 {
+                                                            Ok(format!("🎲 d{} → [b]{}[/b]", sides, rolls[0]))
+                                                        } else if count <= 20 {
+                                                            let details: Vec<String> = rolls.iter().map(|r| r.to_string()).collect();
+                                                            let mod_str = if modifier > 0 { format!("+{}", modifier) } else if modifier < 0 { format!("{}", modifier) } else { String::new() };
+                                                            Ok(format!("🎲 {}d{}{} → ({}) = [b]{}[/b]", count, sides, mod_str, details.join("+"), sum))
+                                                        } else {
+                                                            let mod_str = if modifier > 0 { format!("+{}", modifier) } else if modifier < 0 { format!("{}", modifier) } else { String::new() };
+                                                            Ok(format!("🎲 {}d{}{} → [b]{}[/b]", count, sides, mod_str, sum))
+                                                        }
+                                                    })();
+
+                                                    let response = match result {
+                                                        Ok(s) => s,
+                                                        Err(e) => format!("❌ {}", e),
+                                                    };
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {

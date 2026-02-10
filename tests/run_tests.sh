@@ -364,6 +364,42 @@ test_greet_off() {
     fi
 }
 
+test_roll_command() {
+    # !roll should return a dice result with 🎲
+    if sq_send_and_check "!roll" "🎲" 3; then
+        log_pass "!roll returns dice result"
+    else
+        log_fail "!roll returns dice result" "no dice emoji in response"
+    fi
+}
+
+test_roll_dice_notation() {
+    # !roll 2d6 should return a dice result with details
+    if sq_send_and_check "!roll 2d6" "🎲" 3; then
+        log_pass "!roll 2d6 returns dice result"
+    else
+        log_fail "!roll 2d6 returns dice result" "no dice emoji in response"
+    fi
+}
+
+test_timeout_command() {
+    # !timeout should show current timeout
+    if sq_send_and_check "!timeout" "Silence timeout" 3; then
+        log_pass "!timeout shows current timeout"
+    else
+        log_fail "!timeout shows current timeout" "no response in logs"
+    fi
+}
+
+test_timeout_set() {
+    # !timeout 3000 should set timeout
+    if sq_send_and_check "!timeout 3000" "3000ms" 3; then
+        log_pass "!timeout 3000 sets timeout"
+    else
+        log_fail "!timeout 3000 sets timeout" "no response in logs"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -395,6 +431,10 @@ test_mute_command
 test_unmute_command
 test_greet_command
 test_greet_off
+test_roll_command
+test_roll_dice_notation
+test_timeout_command
+test_timeout_set
 test_bot_does_not_crash
 
 echo ""

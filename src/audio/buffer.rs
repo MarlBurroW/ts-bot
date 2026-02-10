@@ -252,6 +252,17 @@ impl SpeakerBufferManager {
             .collect()
     }
 
+    /// Get current silence timeout in milliseconds
+    pub fn silence_timeout_ms(&self) -> u64 {
+        self.silence_timeout.as_millis() as u64
+    }
+
+    /// Set silence timeout (clamped to 500ms–10000ms)
+    pub fn set_silence_timeout_ms(&mut self, ms: u64) {
+        let clamped = ms.clamp(500, 10000);
+        self.silence_timeout = Duration::from_millis(clamped);
+    }
+
     /// Cleanup old inactive buffers
     pub fn cleanup_old_buffers(&mut self, max_age: Duration) {
         let to_remove: Vec<u64> = self

@@ -3014,6 +3014,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hound",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "slog",
