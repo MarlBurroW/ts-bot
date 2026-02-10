@@ -646,6 +646,7 @@ async fn main() -> Result<()> {
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!who[/b] — qui est dans ton channel ?\n\
+                                                         • [b]!channels[/b] — lister tous les channels du serveur\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string()
                                                     );
@@ -731,6 +732,56 @@ async fn main() -> Result<()> {
                                                             Ok(Some(msg)) => { let _ = tx_who.try_send(msg); }
                                                             Ok(None) => { let _ = tx_who.try_send("❌ Erreur interne.".to_string()); }
                                                             Err(e) => { let _ = tx_who.try_send(format!("❌ Erreur: {}", e)); }
+                                                        }
+                                                    });
+                                                } else if msg_lower.contains("!channels") {
+                                                    // Show all server channels with user counts
+                                                    let mut sender_for_ch = ts3_sender.clone();
+                                                    let tx_ch = ts3_msg_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        let result = sender_for_ch.with_connection(move |con| {
+                                                            if let Ok(state) = con.get_state() {
+                                                                // Count clients per channel
+                                                                let mut client_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+                                                                for c in state.clients.values() {
+                                                                    *client_counts.entry(c.channel.0 as u64).or_insert(0) += 1;
+                                                                }
+
+                                                                // Build channel tree (root channels sorted by order, then sub-channels)
+                                                                let mut lines: Vec<String> = Vec::new();
+
+                                                                // Collect and sort channels by parent, then order
+                                                                let mut channels: Vec<_> = state.channels.iter().collect();
+                                                                channels.sort_by_key(|(_, ch)| (ch.parent.0, ch.order.0));
+
+                                                                // Simple flat list with indentation for sub-channels
+                                                                for (id, ch) in &channels {
+                                                                    let count = client_counts.get(&(id.0 as u64)).copied().unwrap_or(0);
+                                                                    let indent = if ch.parent.0 == 0 { "" } else { "  " };
+                                                                    let users = if count > 0 {
+                                                                        format!(" [b]({})[/b]", count)
+                                                                    } else {
+                                                                        String::new()
+                                                                    };
+                                                                    lines.push(format!("{}• {}{}", indent, ch.name, users));
+                                                                }
+
+                                                                let total_channels = channels.len();
+                                                                let total_clients: usize = client_counts.values().sum();
+                                                                Some(format!(
+                                                                    "📡 [b]Channels[/b] — {} channels, {} utilisateurs\n{}",
+                                                                    total_channels,
+                                                                    total_clients,
+                                                                    lines.join("\n")
+                                                                ))
+                                                            } else {
+                                                                Some("❌ État TS3 indisponible.".to_string())
+                                                            }
+                                                        }).await;
+                                                        match result {
+                                                            Ok(Some(msg)) => { let _ = tx_ch.try_send(msg); }
+                                                            Ok(None) => { let _ = tx_ch.try_send("❌ Erreur interne.".to_string()); }
+                                                            Err(e) => { let _ = tx_ch.try_send(format!("❌ Erreur: {}", e)); }
                                                         }
                                                     });
                                                 } else if msg_lower.starts_with("!lang") {
