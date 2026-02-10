@@ -252,6 +252,27 @@ async fn main() -> Result<()> {
                     });
                 }
 
+                // Unmute bot input/output so TTS audio is sent without warnings
+                {
+                    let mut unmute_sender = ts3_sender.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                        let mut cmd = OutCommand::new(
+                            Direction::C2S, Flags::empty(),
+                            PacketType::Command, "clientupdate",
+                        );
+                        cmd.write_arg("client_input_hardware", &1);
+                        cmd.write_arg("client_output_hardware", &1);
+                        cmd.write_arg("client_input_muted", &0);
+                        cmd.write_arg("client_output_muted", &0);
+                        match unmute_sender.send_command(cmd).await {
+                            Ok(()) => info!("Bot unmuted (input/output hardware enabled)"),
+                            Err(e) => warn!("Failed to unmute bot: {:?}", e),
+                        }
+                    });
+                }
+
                 // Channel for queuing outgoing TS3 chat messages
                 let (ts3_msg_tx, mut ts3_msg_rx) = tokio::sync::mpsc::channel::<OutgoingMessage>(10);
 
