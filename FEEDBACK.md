@@ -29,8 +29,9 @@ La commande `!viens` échoue avec "❌ Impossible de trouver ton channel" alors 
 Le bot devrait pouvoir résoudre le channel de l'utilisateur qui envoie la commande et s'y déplacer. Vérifier la logique de résolution du channel de l'invocateur (clientinfo ? channelid du sender ?).
 
 ## 2026-02-10 - !viens TOUJOURS cassé après le fix
-Status: pending
+Status: done
 Priority: high
+Note: Fixed in commit 8fcca0c. Root cause was NOT the ClientId lookup — it was channel subscription. tsclientlib only sees clients in subscribed channels, and by default only the bot's own channel is subscribed. Added `channelsubscribeall` command sent 3s after connection, which makes ALL server clients visible. Now !viens, !who, !channels etc. all see every connected client regardless of channel.
 
 Le fix par fallback nom (commit 2a1ee92) ne marche pas. Le problème réel : `state.clients` ne contient probablement PAS les clients qui étaient déjà connectés avant le bot. Seuls les clients qui join/move APRÈS la connexion du bot sont trackés.
 

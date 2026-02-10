@@ -799,6 +799,7 @@ async fn main() -> Result<()> {
                                                          • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
                                                          • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
+                                                         • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -1298,6 +1299,81 @@ async fn main() -> Result<()> {
                                                     let response = match result {
                                                         Ok(s) => s,
                                                         Err(e) => format!("❌ {}", e),
+                                                    };
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
+                                                } else if msg_lower.starts_with("!quote") {
+                                                    // Quote book: save and recall memorable quotes
+                                                    let args = message.get(6..).unwrap_or("").trim();
+                                                    let quotes_path = "data/quotes.json";
+
+                                                    // Load quotes from file
+                                                    let mut quotes: Vec<serde_json::Value> = std::fs::read_to_string(quotes_path)
+                                                        .ok()
+                                                        .and_then(|s| serde_json::from_str(&s).ok())
+                                                        .unwrap_or_default();
+
+                                                    let response = if args.starts_with("add ") || args.starts_with("add\t") {
+                                                        let quote_text = args[4..].trim();
+                                                        if quote_text.is_empty() {
+                                                            "❌ Usage: !quote add <texte>".to_string()
+                                                        } else if quote_text.len() > 500 {
+                                                            "❌ Quote trop longue (max 500 caractères)".to_string()
+                                                        } else {
+                                                            let entry = serde_json::json!({
+                                                                "text": quote_text,
+                                                                "author": invoker.name.to_string(),
+                                                                "date": chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string(),
+                                                            });
+                                                            quotes.push(entry);
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let _ = std::fs::write(quotes_path, serde_json::to_string_pretty(&quotes).unwrap_or_default());
+                                                            format!("💬 Quote #{} sauvegardée !", quotes.len())
+                                                        }
+                                                    } else if args == "list" {
+                                                        if quotes.is_empty() {
+                                                            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
+                                                        } else {
+                                                            let start = if quotes.len() > 5 { quotes.len() - 5 } else { 0 };
+                                                            let mut lines = vec![format!("📖 Dernières quotes ({}/{}) :", quotes.len() - start, quotes.len())];
+                                                            for (i, q) in quotes[start..].iter().enumerate() {
+                                                                let num = start + i + 1;
+                                                                let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                                                                let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
+                                                                lines.push(format!("#{} — \"{}\" — {}", num, text, author));
+                                                            }
+                                                            lines.join("\n")
+                                                        }
+                                                    } else if args == "count" {
+                                                        format!("📖 {} quote(s) sauvegardée(s)", quotes.len())
+                                                    } else if args.starts_with("del ") || args.starts_with("delete ") {
+                                                        let num_str = args.split_whitespace().nth(1).unwrap_or("");
+                                                        if let Ok(num) = num_str.parse::<usize>() {
+                                                            if num >= 1 && num <= quotes.len() {
+                                                                let removed = quotes.remove(num - 1);
+                                                                let _ = std::fs::write(quotes_path, serde_json::to_string_pretty(&quotes).unwrap_or_default());
+                                                                let text = removed.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                                                                format!("🗑️ Quote #{} supprimée : \"{}\"", num, text)
+                                                            } else {
+                                                                format!("❌ Numéro invalide (1-{})", quotes.len())
+                                                            }
+                                                        } else {
+                                                            "❌ Usage: !quote del <numéro>".to_string()
+                                                        }
+                                                    } else if args.is_empty() {
+                                                        // Random quote
+                                                        if quotes.is_empty() {
+                                                            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
+                                                        } else {
+                                                            use rand::Rng;
+                                                            let idx = rand::thread_rng().gen_range(0..quotes.len());
+                                                            let q = &quotes[idx];
+                                                            let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                                                            let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
+                                                            let date = q.get("date").and_then(|v| v.as_str()).unwrap_or("");
+                                                            format!("💬 #{}/{} — \"{}\" — {} ({})", idx + 1, quotes.len(), text, author, date)
+                                                        }
+                                                    } else {
+                                                        "❌ Usage: !quote [add <texte>|list|count|del <n>]".to_string()
                                                     };
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!lang") {

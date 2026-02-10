@@ -400,6 +400,33 @@ test_timeout_set() {
     fi
 }
 
+test_quote_add() {
+    # !quote add should save a quote
+    if sq_send_and_check "!quote add Test quote from integration test" "sauvegardée" 3; then
+        log_pass "!quote add saves a quote"
+    else
+        log_fail "!quote add saves a quote" "no confirmation in response"
+    fi
+}
+
+test_quote_random() {
+    # !quote should return a random quote (we just added one)
+    if sq_send_and_check "!quote" "Test quote from integration test" 3; then
+        log_pass "!quote returns a random quote"
+    else
+        log_fail "!quote returns a random quote" "no quote text in response"
+    fi
+}
+
+test_quote_count() {
+    # !quote count should show count
+    if sq_send_and_check "!quote count" "quote" 3; then
+        log_pass "!quote count shows count"
+    else
+        log_fail "!quote count shows count" "no count in response"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -435,6 +462,9 @@ test_roll_command
 test_roll_dice_notation
 test_timeout_command
 test_timeout_set
+test_quote_add
+test_quote_random
+test_quote_count
 test_bot_does_not_crash
 
 echo ""
