@@ -42,6 +42,11 @@ pub enum CommandAction {
         channel_id: u64,
         description: String,
     },
+    /// Activate listening for a specific client
+    ActivateListener {
+        command_id: Option<String>,
+        client_id: u64,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -127,9 +132,9 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             WebSocketEvent::command_success(command_id.clone(), Some("Setting description...".to_string())),
             CommandAction::SetChannelDescription { command_id, channel_id, description },
         ),
-        WebSocketCommand::ActivateListener { command_id, .. } => (
-            WebSocketEvent::command_success(command_id.clone(), Some("Listener activation not supported server-side (use plugin)".to_string())),
-            CommandAction::None,
+        WebSocketCommand::ActivateListener { command_id, client_id } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Activating listener...".to_string())),
+            CommandAction::ActivateListener { command_id, client_id },
         ),
     }
 }

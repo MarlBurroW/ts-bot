@@ -16,6 +16,7 @@ use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 
 use crate::models::{BotConfig, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
+use crate::audio::buffer::SpeakerBufferManager;
 
 /// Shared TS3 connection handle, set once connected.
 /// `None` if TS3 is not yet connected.
@@ -41,6 +42,8 @@ struct AppState {
     ts3_server: String,
     /// Shared flag to stop TTS playback remotely
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared buffer manager for activating speaker listening
+    buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
 }
 
 /// Run the WebSocket server
@@ -53,6 +56,7 @@ pub async fn run_server(
     tts_tx: Option<tokio::sync::mpsc::Sender<TtsRequest>>,
     ts3_handle: SharedTs3Handle,
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -65,6 +69,7 @@ pub async fn run_server(
         bot_nickname: config.ts3_nickname.clone(),
         ts3_server: config.ts3_server.clone(),
         tts_stop_flag,
+        buffer_manager,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -538,6 +543,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 }
                             } else {
                                 let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::ActivateListener { command_id, client_id } => {
+                            if let Some(ref bm) = state.buffer_manager {
+                                let mut bm = bm.lock().await;
+                                if let Some(buf) = bm.get_buffer_mut(client_id) {
+                                    if !buf.is_active {
+                                        buf.activate();
+                                        buf.clear();
+                                        info!("🎤 Activated listening for client {} via WS command", client_id);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Listening activated for client {}", client_id))));
+                                    } else {
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Client {} already being listened to", client_id))));
+                                    }
+                                } else {
+                                    let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("No audio buffer for client {}", client_id)));
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Buffer manager not available".to_string()));
                             }
                         }
                         CommandAction::SetChannelDescription { command_id, channel_id, description } => {

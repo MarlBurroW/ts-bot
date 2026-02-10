@@ -90,6 +90,10 @@ async fn main() -> Result<()> {
     };
     let tts_stop_flag_for_ts3 = tts_stop_flag.clone();
 
+    // Shared buffer manager — accessible from both TS3 and WS tasks
+    let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
+    let buffer_manager_for_ws = Some(buffer_manager.clone());
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -97,28 +101,9 @@ async fn main() -> Result<()> {
         // Initialize audio processing components
         info!("Initializing audio processing components");
 
-        // Whisper base wake word detector (better French than tiny, fast enough for wake word)
-        let wake_detector = match WakeWordPipeline::new("models/ggml-base.bin", "marlbot") {
-            Ok(p) => {
-                info!("WakeWordPipeline (base) initialized successfully");
-                Some(Arc::new(Mutex::new(p)))
-            }
-            Err(e) => {
-                warn!("Failed to initialize WakeWordPipeline: {}. Wake word detection disabled.", e);
-                None
-            }
-        };
-
-        let transcription_pipeline = match TranscriptionPipeline::new("models/ggml-small.bin") {
-            Ok(p) => {
-                info!("TranscriptionPipeline (small) initialized successfully");
-                Some(Arc::new(Mutex::new(p)))
-            }
-            Err(e) => {
-                warn!("Failed to initialize TranscriptionPipeline: {}. Transcription disabled.", e);
-                None
-            }
-        };
+        // Wake word detection is now handled by Rustpotter (no Whisper model needed)
+        // WakeWordPipeline is no longer loaded — saves ~150MB RAM
+        let wake_detector: Option<Arc<Mutex<WakeWordPipeline>>> = None;
 
         // Initialize Whisper API transcriber (uses same key as TTS)
         let whisper_api: Option<Arc<WhisperApiTranscriber>> = config.tts_api_key.as_ref()
@@ -128,7 +113,22 @@ async fn main() -> Result<()> {
                 Arc::new(WhisperApiTranscriber::new(key.clone()))
             });
 
-        let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
+        // Only load local Whisper model as fallback if API is not available
+        let transcription_pipeline = if whisper_api.is_some() {
+            info!("Whisper API available — skipping local ggml-small.bin model (~500MB RAM saved)");
+            None
+        } else {
+            match TranscriptionPipeline::new("models/ggml-small.bin") {
+                Ok(p) => {
+                    info!("TranscriptionPipeline (small) initialized as fallback (no API key)");
+                    Some(Arc::new(Mutex::new(p)))
+                }
+                Err(e) => {
+                    warn!("Failed to initialize TranscriptionPipeline: {}. Transcription disabled.", e);
+                    None
+                }
+            }
+        };
 
         // Attempt initial connection
         match ts3_client.connect().await {
@@ -409,7 +409,8 @@ async fn main() -> Result<()> {
                         // when Whisper is busy checking wake words for other speakers.
                         // The pipeline mutex (blocking_lock) handles serialization.
                         _ = silence_check_interval.tick() => {
-                            if let Some(ref tp_arc) = transcription_pipeline {
+                            if transcription_pipeline.is_some() || whisper_api.is_some() {
+                                let tp_arc = transcription_pipeline.clone();
                                 let mut bm = buffer_manager.lock().await;
                                 let timed_out = bm.check_silence_timeouts();
 
@@ -435,7 +436,7 @@ async fn main() -> Result<()> {
                                             tokio::task::spawn_blocking(move || {
                                                 let audio_len = full_audio.len();
 
-                                                // Try API transcription first, fall back to local
+                                                // Try API transcription first, fall back to local if available
                                                 let result = if let Some(ref api) = api_clone {
                                                     match api.transcribe(&full_audio, Some("fr")) {
                                                         Ok(text) if !text.is_empty() => {
@@ -443,25 +444,37 @@ async fn main() -> Result<()> {
                                                             Ok(text)
                                                         }
                                                         Ok(_) => {
-                                                            warn!("WhisperAPI returned empty, falling back to local Whisper");
-                                                            let mut lock = tp_clone.blocking_lock();
-                                                            let r = lock.transcribe(&full_audio);
-                                                            drop(lock);
-                                                            r
+                                                            warn!("WhisperAPI returned empty");
+                                                            if let Some(ref tp) = tp_clone {
+                                                                warn!("Falling back to local Whisper");
+                                                                let mut lock = tp.blocking_lock();
+                                                                let r = lock.transcribe(&full_audio);
+                                                                drop(lock);
+                                                                r
+                                                            } else {
+                                                                Ok(String::new())
+                                                            }
                                                         }
                                                         Err(e) => {
-                                                            warn!("WhisperAPI failed: {}, falling back to local Whisper", e);
-                                                            let mut lock = tp_clone.blocking_lock();
-                                                            let r = lock.transcribe(&full_audio);
-                                                            drop(lock);
-                                                            r
+                                                            warn!("WhisperAPI failed: {}", e);
+                                                            if let Some(ref tp) = tp_clone {
+                                                                warn!("Falling back to local Whisper");
+                                                                let mut lock = tp.blocking_lock();
+                                                                let r = lock.transcribe(&full_audio);
+                                                                drop(lock);
+                                                                r
+                                                            } else {
+                                                                Err(anyhow::anyhow!("WhisperAPI failed and no local model: {}", e))
+                                                            }
                                                         }
                                                     }
-                                                } else {
-                                                    let mut lock = tp_clone.blocking_lock();
+                                                } else if let Some(ref tp) = tp_clone {
+                                                    let mut lock = tp.blocking_lock();
                                                     let r = lock.transcribe(&full_audio);
                                                     drop(lock);
                                                     r
+                                                } else {
+                                                    Err(anyhow::anyhow!("No transcription backend available"))
                                                 };
 
                                                 match result {
@@ -544,7 +557,7 @@ async fn main() -> Result<()> {
                                                 let msg_event = MessageEvent {
                                                     message_type,
                                                     sender_id: invoker.id.0 as u64,
-                                                    sender_uid,
+                                                    sender_uid: sender_uid.clone(),
                                                     sender_name: invoker.name.to_string(),
                                                     content: message.to_string(),
                                                     channel_id,
@@ -555,6 +568,41 @@ async fn main() -> Result<()> {
                                                 let ws_event = WebSocketEvent::message_received(msg_event);
                                                 if let Err(e) = event_tx_clone.send(ws_event) {
                                                     warn!("Failed to broadcast message event: {}", e);
+                                                }
+
+                                                // Chat trigger: !listen or !marlbot activates listening for the sender
+                                                let msg_lower = message.to_lowercase();
+                                                if msg_lower.contains("!listen") || msg_lower.contains("!marlbot") {
+                                                    let sender_id = invoker.id.0 as u64;
+                                                    let sender_name = invoker.name.to_string();
+                                                    info!("🎤 Chat trigger from {} (id: {})", sender_name, sender_id);
+
+                                                    // Stop current speech if any
+                                                    if let Some(ref player) = audio_player {
+                                                        if player.is_speaking() { player.stop(); }
+                                                    }
+
+                                                    let mut bm = buffer_manager.lock().await;
+                                                    let buffer = bm.get_or_create_buffer(sender_id, sender_name.clone(), sender_uid.clone());
+                                                    if !buffer.is_active {
+                                                        buffer.activate();
+                                                        buffer.clear();
+                                                        drop(bm);
+                                                        let _ = ts3_msg_tx.try_send(format!("🎤 J'écoute, {} !", sender_name));
+                                                        // Play confirmation audio if available
+                                                        if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
+                                                            let frames = (**cached).clone();
+                                                            let player_ref = player.clone();
+                                                            tokio::spawn(async move {
+                                                                if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
+                                                                    warn!("Failed to play confirmation: {}", e);
+                                                                }
+                                                            });
+                                                        }
+                                                    } else {
+                                                        drop(bm);
+                                                        let _ = ts3_msg_tx.try_send(format!("Je t'écoute déjà, {} 😉", sender_name));
+                                                    }
                                                 }
                                             }
                                             Event::PropertyAdded { id, .. } => {
@@ -640,7 +688,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 SyncStreamItem::Audio(audio_data) => {
-                                    if wake_detector.is_some() || transcription_pipeline.is_some() {
+                                    if wake_detector.is_some() || transcription_pipeline.is_some() || whisper_api.is_some() {
                                         let audio_inner = audio_data.data();
                                         let data = audio_inner.data();
 
@@ -742,7 +790,7 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });
