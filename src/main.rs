@@ -70,6 +70,21 @@ fn save_language_prefs(overrides: &HashMap<String, String>) -> Result<()> {
     Ok(())
 }
 
+/// Update bot nickname to reflect listening state (e.g. "Marlbot 🎤" when listening)
+async fn update_bot_nickname(
+    sender: &mut tsclientlib::sync::SyncConnectionHandle,
+    is_listening: bool,
+) {
+    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+    let nickname = if is_listening { "Marlbot \u{1F3A4}" } else { "Marlbot" };
+    let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientupdate");
+    cmd.write_arg("client_nickname", &nickname);
+    match sender.send_command(cmd).await {
+        Ok(()) => debug!("Nickname updated to '{}'", nickname),
+        Err(e) => debug!("Nickname update failed: {:?}", e),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load configuration first (before logging so we can use LOG_LEVEL)
@@ -491,6 +506,17 @@ async fn main() -> Result<()> {
                                         let _ = ts3_msg_tx.try_send(
                                             OutgoingMessage::channel(format!("Arret de l'ecoute, {}.", speaker_name))
                                         );
+
+                                        // Update nickname if no more active listeners
+                                        {
+                                            let bm_check = buffer_manager.lock().await;
+                                            let still_listening = !bm_check.get_active_speakers().is_empty();
+                                            drop(bm_check);
+                                            if !still_listening {
+                                                let mut nick_sender = ts3_sender.clone();
+                                                tokio::spawn(async move { update_bot_nickname(&mut nick_sender, false).await; });
+                                            }
+                                        }
 
                                         if !full_audio.is_empty() {
                                             // RMS energy gate: skip transcription if audio is mostly silence
@@ -1104,10 +1130,14 @@ async fn main() -> Result<()> {
                                                         if active { buffer.deactivate(); }
                                                         active
                                                     } else { false };
+                                                    let still_listening = !bm.get_active_speakers().is_empty();
                                                     drop(bm);
                                                     if was_active {
                                                         info!("🛑 Stop trigger from {} (id: {})", sender_name, sender_id);
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🛑 OK {}, j'arrête.", sender_name), &reply_target, reply_sender_id));
+                                                        // Update nickname if no more active listeners
+                                                        let mut nick_sender = ts3_sender.clone();
+                                                        tokio::spawn(async move { update_bot_nickname(&mut nick_sender, still_listening).await; });
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🔇 Rien à arrêter.".to_string(), &reply_target, reply_sender_id));
                                                     }
@@ -1128,6 +1158,9 @@ async fn main() -> Result<()> {
                                                         buffer.clear();
                                                         drop(bm);
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🎤 J'écoute, {} !", sender_name), &reply_target, reply_sender_id));
+                                                        // Update nickname to show listening state
+                                                        let mut nick_sender = ts3_sender.clone();
+                                                        tokio::spawn(async move { update_bot_nickname(&mut nick_sender, true).await; });
                                                         // Play confirmation audio if available
                                                         if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
                                                             let frames = (**cached).clone();
@@ -1186,6 +1219,12 @@ async fn main() -> Result<()> {
                                                                 info!("🔇 Auto-deactivated listening for disconnected user {} (id: {})", client.name, client_id_u64);
                                                             }
                                                         }
+                                                        let still_listening = !bm.get_active_speakers().is_empty();
+                                                        drop(bm);
+                                                        if !still_listening {
+                                                            let mut nick_sender = ts3_sender.clone();
+                                                            tokio::spawn(async move { update_bot_nickname(&mut nick_sender, false).await; });
+                                                        }
                                                     }
                                                     let _ = event_tx_clone.send(WebSocketEvent::ClientDisconnected {
                                                         client_id: client_id_u64,
@@ -1225,6 +1264,12 @@ async fn main() -> Result<()> {
                                                                                 buffer.deactivate();
                                                                                 info!("🔇 Auto-deactivated listening for {} (moved to different channel)", name);
                                                                             }
+                                                                        }
+                                                                        let still_listening = !bm.get_active_speakers().is_empty();
+                                                                        drop(bm);
+                                                                        if !still_listening {
+                                                                            let mut nick_sender = sender.clone();
+                                                                            tokio::spawn(async move { update_bot_nickname(&mut nick_sender, false).await; });
                                                                         }
                                                                     }
                                                                 }

@@ -596,6 +596,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         buf.clear();
                                         info!("🎤 Activated listening for client {} via WS command", client_id);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Listening activated for client {}", client_id))));
+                                        // Update nickname to show listening state
+                                        let mut handle_guard = ts3_handle.lock().await;
+                                        if let Some(ref mut sender) = *handle_guard {
+                                            let mut cmd = tsproto_packets::packets::OutCommand::new(
+                                                tsproto_packets::packets::Direction::C2S,
+                                                tsproto_packets::packets::Flags::empty(),
+                                                tsproto_packets::packets::PacketType::Command,
+                                                "clientupdate",
+                                            );
+                                            cmd.write_arg("client_nickname", &"Marlbot \u{1F3A4}");
+                                            let _ = sender.send_command(cmd).await;
+                                        }
                                     } else {
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Client {} already being listened to", client_id))));
                                     }
@@ -614,6 +626,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         buf.deactivate();
                                         info!("🔇 Deactivated listening for client {} via WS command", client_id);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Listening deactivated for client {}", client_id))));
+                                        // Update nickname if no more active listeners
+                                        let still_listening = !bm.get_active_speakers().is_empty();
+                                        if !still_listening {
+                                            let mut handle_guard = ts3_handle.lock().await;
+                                            if let Some(ref mut sender) = *handle_guard {
+                                                let mut cmd = tsproto_packets::packets::OutCommand::new(
+                                                    tsproto_packets::packets::Direction::C2S,
+                                                    tsproto_packets::packets::Flags::empty(),
+                                                    tsproto_packets::packets::PacketType::Command,
+                                                    "clientupdate",
+                                                );
+                                                cmd.write_arg("client_nickname", &"Marlbot");
+                                                let _ = sender.send_command(cmd).await;
+                                            }
+                                        }
                                     } else {
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Client {} was not being listened to", client_id))));
                                     }
