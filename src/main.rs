@@ -528,9 +528,13 @@ async fn main() -> Result<()> {
                                                     timestamp: chrono::Utc::now(),
                                                 };
 
-                                                let ws_event = WebSocketEvent::message_received(msg_event);
-                                                if let Err(e) = event_tx_clone.send(ws_event) {
-                                                    warn!("Failed to broadcast message event: {}", e);
+                                                // Only forward non-command messages to OpenClaw via WS
+                                                // Bot commands (!listen, !stop, !help, !status) are handled locally
+                                                if !message.starts_with('!') {
+                                                    let ws_event = WebSocketEvent::message_received(msg_event);
+                                                    if let Err(e) = event_tx_clone.send(ws_event) {
+                                                        warn!("Failed to broadcast message event: {}", e);
+                                                    }
                                                 }
 
                                                 // Chat trigger: !listen or !marlbot activates listening for the sender
