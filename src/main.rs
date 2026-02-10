@@ -647,6 +647,7 @@ async fn main() -> Result<()> {
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!who[/b] — qui est dans ton channel ?\n\
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
+                                                         • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string()
                                                     );
@@ -734,6 +735,66 @@ async fn main() -> Result<()> {
                                                             Err(e) => { let _ = tx_who.try_send(format!("❌ Erreur: {}", e)); }
                                                         }
                                                     });
+                                                } else if msg_lower.starts_with("!move") {
+                                                    // Move the bot to a channel by name
+                                                    let query = message.trim()[5..].trim().to_string();
+                                                    if query.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send("❌ Usage: !move <nom du channel>".to_string());
+                                                    } else {
+                                                        let mut sender_for_move = ts3_sender.clone();
+                                                        let tx_move = ts3_msg_tx.clone();
+                                                        let query_lower = query.to_lowercase();
+                                                        tokio::spawn(async move {
+                                                            let result = sender_for_move.with_connection(move |con| {
+                                                                if let Ok(state) = con.get_state() {
+                                                                    let own_id = state.own_client.0;
+                                                                    // Find channel by case-insensitive partial match
+                                                                    let mut best_match: Option<(u64, String)> = None;
+                                                                    for (id, ch) in state.channels.iter() {
+                                                                        let ch_name_lower = ch.name.to_lowercase();
+                                                                        if ch_name_lower == query_lower {
+                                                                            // Exact match — use immediately
+                                                                            best_match = Some((id.0 as u64, ch.name.clone()));
+                                                                            break;
+                                                                        } else if ch_name_lower.contains(&query_lower) && best_match.is_none() {
+                                                                            best_match = Some((id.0 as u64, ch.name.clone()));
+                                                                        }
+                                                                    }
+                                                                    best_match.map(|(ch_id, ch_name)| (own_id, ch_id, ch_name))
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            }).await;
+
+                                                            match result {
+                                                                Ok(Some((own_id, channel_id, channel_name))) => {
+                                                                    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                    let mut cmd = OutCommand::new(
+                                                                        Direction::C2S, Flags::empty(),
+                                                                        PacketType::Command, "clientmove",
+                                                                    );
+                                                                    cmd.write_arg("clid", &own_id);
+                                                                    cmd.write_arg("cid", &channel_id);
+                                                                    match sender_for_move.send_command(cmd).await {
+                                                                        Ok(()) => {
+                                                                            // Save channel for restore on restart
+                                                                            let _ = std::fs::write(".last_channel", channel_id.to_string());
+                                                                            let _ = tx_move.try_send(format!("✅ Déplacé vers [b]{}[/b]", channel_name));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            let _ = tx_move.try_send(format!("❌ Impossible de bouger: {:?}", e));
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Ok(None) => {
+                                                                    let _ = tx_move.try_send(format!("❌ Aucun channel trouvé pour \"{}\"", query));
+                                                                }
+                                                                Err(e) => {
+                                                                    let _ = tx_move.try_send(format!("❌ Erreur: {}", e));
+                                                                }
+                                                            }
+                                                        });
+                                                    }
                                                 } else if msg_lower.contains("!channels") {
                                                     // Show all server channels with user counts
                                                     let mut sender_for_ch = ts3_sender.clone();
