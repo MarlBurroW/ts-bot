@@ -544,6 +544,12 @@ async fn main() -> Result<()> {
                                             Event::Message { target, invoker, message } => {
                                                 info!("TS3 Message from {}: {}", invoker.name, message);
 
+                                                // Ignore our own messages to prevent infinite loops
+                                                let bot_name = invoker.name.to_lowercase();
+                                                if bot_name.starts_with("marlbot") {
+                                                    continue;
+                                                }
+
                                                 let (message_type, channel_id) = match target {
                                                     MessageTarget::Channel => (MessageType::Channel, None),
                                                     MessageTarget::Server => (MessageType::Channel, None),
