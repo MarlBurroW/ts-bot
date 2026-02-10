@@ -189,6 +189,11 @@ async fn main() -> Result<()> {
     // Cooldown: don't greet the same user within 10 minutes (keyed by client_id)
     let greet_cooldowns: Arc<Mutex<HashMap<u64, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Chat history ring buffer (last N messages for !history)
+    let chat_history: Arc<Mutex<std::collections::VecDeque<(String, String, String)>>> =
+        Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(50)));
+    // Each entry: (timestamp, author, text) — max 50 entries
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -443,6 +448,7 @@ async fn main() -> Result<()> {
                     let tts_event_tx = event_tx_clone.clone();
                     let last_spoken_ws = last_spoken_for_ws.clone();
                     let tts_muted_clone = tts_muted_for_tts.clone();
+                    let tts_chat_history = chat_history.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
@@ -458,6 +464,19 @@ async fn main() -> Result<()> {
                                 format!("🤖 {}", request.text)
                             };
                             let _ = tts_chat_tx.try_send(OutgoingMessage::channel(display_text));
+
+                            // Record bot response to chat history
+                            {
+                                let mut hist = tts_chat_history.lock().await;
+                                let ts = chrono::Utc::now().format("%H:%M").to_string();
+                                let truncated = if request.text.len() > 200 {
+                                    format!("{}...", &request.text[..200])
+                                } else {
+                                    request.text.clone()
+                                };
+                                hist.push_back((ts, "🤖 Marlbot".to_string(), truncated));
+                                if hist.len() > 50 { hist.pop_front(); }
+                            }
 
                             // If TTS is muted, skip speech but still emit events
                             if tts_muted_clone.load(std::sync::atomic::Ordering::Relaxed) {
@@ -504,6 +523,14 @@ async fn main() -> Result<()> {
 
                                     if !command_text.trim().is_empty() {
                                         info!("Transcription from {} [{}]: '{}'", speaker_name, detected_language.as_deref().unwrap_or("?"), command_text);
+
+                                        // Record transcription to chat history
+                                        {
+                                            let mut hist = chat_history.lock().await;
+                                            let ts = chrono::Utc::now().format("%H:%M").to_string();
+                                            hist.push_back((ts, format!("🎤{}", speaker_name), command_text.clone()));
+                                            if hist.len() > 50 { hist.pop_front(); }
+                                        }
 
                                         // Send transcription to TS3 chat
                                         let _ = ts3_msg_tx.try_send(
@@ -747,6 +774,14 @@ async fn main() -> Result<()> {
                                                     }
                                                 }
 
+                                                // Record to chat history (skip bot commands)
+                                                if !message.starts_with('!') {
+                                                    let mut hist = chat_history.lock().await;
+                                                    let ts = chrono::Utc::now().format("%H:%M").to_string();
+                                                    hist.push_back((ts, invoker.name.to_string(), message.to_string()));
+                                                    if hist.len() > 50 { hist.pop_front(); }
+                                                }
+
                                                 let (message_type, channel_id) = match target {
                                                     MessageTarget::Channel => (MessageType::Channel, None),
                                                     MessageTarget::Server => (MessageType::Channel, None),
@@ -800,6 +835,7 @@ async fn main() -> Result<()> {
                                                          • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
+                                                         • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -1376,6 +1412,26 @@ async fn main() -> Result<()> {
                                                         "❌ Usage: !quote [add <texte>|list|count|del <n>]".to_string()
                                                     };
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
+                                                } else if msg_lower.starts_with("!history") {
+                                                    let args = message.get(8..).unwrap_or("").trim();
+                                                    let count: usize = args.parse().unwrap_or(10).min(50).max(1);
+                                                    let hist = chat_history.lock().await;
+                                                    if hist.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("📜 Aucun historique.".to_string(), &reply_target, reply_sender_id));
+                                                    } else {
+                                                        let start = if hist.len() > count { hist.len() - count } else { 0 };
+                                                        let mut lines = vec![format!("📜 Derniers {} message(s) :", hist.len() - start)];
+                                                        for (ts, author, text) in hist.iter().skip(start) {
+                                                            let truncated = if text.len() > 100 {
+                                                                format!("{}...", &text[..100])
+                                                            } else {
+                                                                text.clone()
+                                                            };
+                                                            lines.push(format!("[{}] {} : {}", ts, author, truncated));
+                                                        }
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
+                                                    }
+                                                    drop(hist);
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {

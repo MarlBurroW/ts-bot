@@ -427,6 +427,15 @@ test_quote_count() {
     fi
 }
 
+test_history_command() {
+    # !history should return history header
+    if sq_send_and_check "!history" "📜" 3; then
+        log_pass "!history returns history"
+    else
+        log_fail "!history returns history" "no history response"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -465,6 +474,7 @@ test_timeout_set
 test_quote_add
 test_quote_random
 test_quote_count
+test_history_command
 test_bot_does_not_crash
 
 echo ""
