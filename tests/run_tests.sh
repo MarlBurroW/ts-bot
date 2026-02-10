@@ -319,6 +319,15 @@ test_come_command() {
     fi
 }
 
+test_replay_command() {
+    # !replay should respond "Rien à rejouer" when nothing has been spoken
+    if sq_send_and_check "!replay" "Rien à rejouer" 5; then
+        log_pass "!replay responds correctly (nothing to replay)"
+    else
+        log_fail "!replay responds correctly" "no response in logs"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -345,6 +354,7 @@ test_stop_command
 test_volume_command
 test_volume_set
 test_come_command
+test_replay_command
 test_bot_does_not_crash
 
 echo ""

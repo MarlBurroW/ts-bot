@@ -169,6 +169,11 @@ async fn main() -> Result<()> {
     let tts_volume_for_ws = Some(tts_volume.clone());
     let tts_volume_for_ts3 = Some(tts_volume.clone());
 
+    // Last spoken text for !replay (text, voice, speed)
+    let last_spoken: Arc<Mutex<Option<(String, Option<String>, Option<f32>)>>> = Arc::new(Mutex::new(None));
+    let last_spoken_for_ws = last_spoken.clone();
+    let last_spoken_for_ts3 = last_spoken.clone();
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -403,9 +408,15 @@ async fn main() -> Result<()> {
                     let synth_clone = synth.clone();
                     let tts_chat_tx = ts3_msg_tx.clone();
                     let tts_event_tx = event_tx_clone.clone();
+                    let last_spoken_ws = last_spoken_for_ws.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
+                            // Save for !replay
+                            {
+                                let mut ls = last_spoken_ws.lock().await;
+                                *ls = Some((request.text.clone(), request.voice.clone(), request.speed));
+                            }
                             // Echo TTS text to TS3 channel chat so muted users can read it
                             let display_text = if request.text.len() > 300 {
                                 format!("🤖 {}...", &request.text[..300])
@@ -740,6 +751,7 @@ async fn main() -> Result<()> {
                                                          • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
+                                                         • [b]!replay[/b] — rejouer le dernier message TTS\n\
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -1150,6 +1162,11 @@ async fn main() -> Result<()> {
                                                         let voice_label = tts_voice.as_deref().unwrap_or("default");
                                                         let speed_label = tts_speed.map_or("default".to_string(), |s| format!("{:.1}x", s));
                                                         info!("🔊 TTS request from {} (voice: {}, speed: {}): '{}'", sender_name, voice_label, speed_label, tts_text);
+                                                        // Save for !replay
+                                                        {
+                                                            let mut ls = last_spoken_for_ts3.lock().await;
+                                                            *ls = Some((tts_text.clone(), tts_voice.clone(), tts_speed));
+                                                        }
                                                         let player_ref = player.clone();
                                                         let synth_ref = synth.clone();
                                                         let tx_tts = ts3_msg_tx.clone();
@@ -1173,6 +1190,37 @@ async fn main() -> Result<()> {
                                                         });
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
+                                                    }
+                                                } else if msg_lower.starts_with("!replay") {
+                                                    let ls = last_spoken_for_ts3.lock().await;
+                                                    if let Some((ref text, ref voice, speed)) = *ls {
+                                                        if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
+                                                            info!("🔁 Replay requested by {}", invoker.name);
+                                                            let player_ref = player.clone();
+                                                            let synth_ref = synth.clone();
+                                                            let replay_text = text.clone();
+                                                            let replay_voice = voice.clone();
+                                                            let replay_speed = speed;
+                                                            let evt_replay = event_tx_clone.clone();
+                                                            drop(ls);
+                                                            tokio::spawn(async move {
+                                                                let _ = evt_replay.send(WebSocketEvent::speak_started(replay_text.clone()));
+                                                                let start = std::time::Instant::now();
+                                                                let result = player_ref.speak(replay_text.clone(), replay_voice, replay_speed, synth_ref).await;
+                                                                let duration_ms = start.elapsed().as_millis() as u64;
+                                                                match result {
+                                                                    Ok(_) => { let _ = evt_replay.send(WebSocketEvent::speak_completed(replay_text, duration_ms)); }
+                                                                    Err(e) => { let _ = evt_replay.send(WebSocketEvent::speak_failed(replay_text, duration_ms, format!("{}", e))); }
+                                                                }
+                                                            });
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🔁 Replay...".to_string(), &reply_target, reply_sender_id));
+                                                        } else {
+                                                            drop(ls);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
+                                                        }
+                                                    } else {
+                                                        drop(ls);
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Rien à rejouer".to_string(), &reply_target, reply_sender_id));
                                                     }
                                                 } else if msg_lower.starts_with("!stop") {
                                                     let sender_id = invoker.id.0 as u64;
