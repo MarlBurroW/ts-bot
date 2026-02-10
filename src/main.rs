@@ -95,6 +95,7 @@ async fn main() -> Result<()> {
 
     // Per-user language overrides for Whisper transcription (speaker_id -> ISO 639-1 code)
     let language_overrides: Arc<Mutex<HashMap<u64, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let language_overrides_for_ws = Some(language_overrides.clone());
 
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
@@ -275,7 +276,7 @@ async fn main() -> Result<()> {
                     match tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
                         use ts3_bot::audio::decoder::OpusDecoder;
                         use ts3_bot::audio::encoder::OpusEncoder;
-                        let tts_audio = synth_clone.synthesize("Oui ?", None)?;
+                        let tts_audio = synth_clone.synthesize("Oui ?", None, None)?;
                         let samples_48k = match tts_audio.sample_rate {
                             48000 => tts_audio.samples,
                             24000 => OpusDecoder::resample_24k_to_48k(&tts_audio.samples),
@@ -309,7 +310,7 @@ async fn main() -> Result<()> {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
                             if let Err(e) = player_clone
-                                .speak(request.text, request.voice, synth_clone.clone())
+                                .speak(request.text, request.voice, request.speed, synth_clone.clone())
                                 .await
                             {
                                 warn!("TTS speak failed: {}", e);
@@ -849,7 +850,7 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });

@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, sync::broadcast};
 use tracing::{error, info, warn};
 
@@ -27,6 +27,7 @@ pub type SharedTs3Handle = Arc<tokio::sync::Mutex<Option<tsclientlib::sync::Sync
 pub struct TtsRequest {
     pub text: String,
     pub voice: Option<String>,
+    pub speed: Option<f32>,
 }
 
 /// Shared state for WebSocket server
@@ -44,6 +45,8 @@ struct AppState {
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Shared buffer manager for activating speaker listening
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
+    /// Per-speaker Whisper language overrides
+    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<u64, String>>>>,
 }
 
 /// Run the WebSocket server
@@ -57,6 +60,7 @@ pub async fn run_server(
     ts3_handle: SharedTs3Handle,
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
+    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<u64, String>>>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -70,6 +74,7 @@ pub async fn run_server(
         ts3_server: config.ts3_server.clone(),
         tts_stop_flag,
         buffer_manager,
+        language_overrides,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -173,9 +178,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     // Execute side effects
                     match action {
                         CommandAction::None => {}
-                        CommandAction::Speak { text, voice } => {
+                        CommandAction::Speak { text, voice, speed } => {
                             if let Some(ref tx) = tts_tx {
-                                if let Err(e) = tx.send(TtsRequest { text, voice }).await {
+                                if let Err(e) = tx.send(TtsRequest { text, voice, speed }).await {
                                     warn!("Failed to queue TTS request: {}", e);
                                     let _ = event_tx.send(WebSocketEvent::command_error(
                                         None,
@@ -582,6 +587,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Buffer manager not available".to_string()));
                             }
                         }
+                        CommandAction::SetLanguage { command_id, client_id, language } => {
+                            if let Some(ref lo) = state.language_overrides {
+                                let mut overrides = lo.lock().await;
+                                if language == "auto" {
+                                    overrides.remove(&client_id);
+                                    info!("Language override removed for client {} via WS", client_id);
+                                    let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language reset to auto-detect for client {}", client_id))));
+                                } else {
+                                    overrides.insert(client_id, language.clone());
+                                    info!("Language override set to '{}' for client {} via WS", language, client_id);
+                                    let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language set to '{}' for client {}", language, client_id))));
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Language overrides not available".to_string()));
+                            }
+                        }
                         CommandAction::SetChannelDescription { command_id, channel_id, description } => {
                             let mut handle_guard = ts3_handle.lock().await;
                             if let Some(ref mut sender) = *handle_guard {
@@ -601,6 +622,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                     Err(e) => {
                                         let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Set description failed: {:?}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+                            }
+                        }
+                        CommandAction::DeleteChannel { command_id, channel_id, force } => {
+                            let mut handle_guard = ts3_handle.lock().await;
+                            if let Some(ref mut sender) = *handle_guard {
+                                let mut cmd = OutCommand::new(
+                                    Direction::C2S,
+                                    Flags::empty(),
+                                    PacketType::Command,
+                                    "channeldelete",
+                                );
+                                cmd.write_arg("cid", &channel_id);
+                                cmd.write_arg("force", &(if force { 1u32 } else { 0u32 }));
+
+                                match sender.send_command(cmd).await {
+                                    Ok(()) => {
+                                        info!("Channel {} deleted (force={})", channel_id, force);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Channel {} deleted", channel_id))));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Delete channel failed: {:?}", e)));
                                     }
                                 }
                             } else {

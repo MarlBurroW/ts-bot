@@ -24,7 +24,7 @@ pub trait TtsSynthesizer: Send + Sync {
     ///
     /// Returns `TtsAudio` with PCM samples and their sample rate.
     /// The caller is responsible for resampling to 48kHz if needed.
-    fn synthesize(&self, text: &str, voice: Option<&str>) -> Result<TtsAudio>;
+    fn synthesize(&self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<TtsAudio>;
 
     /// Get the name of this TTS backend (for logging)
     fn name(&self) -> &str;

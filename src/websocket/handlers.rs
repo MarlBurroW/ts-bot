@@ -7,7 +7,7 @@ pub enum CommandAction {
     /// Just respond to the client (no side effect)
     None,
     /// Forward TTS request to the TTS pipeline
-    Speak { text: String, voice: Option<String> },
+    Speak { text: String, voice: Option<String>, speed: Option<f32> },
     /// Stop ongoing TTS playback
     StopSpeaking,
     /// Query TS3 server state (channels + clients)
@@ -52,6 +52,18 @@ pub enum CommandAction {
         command_id: Option<String>,
         client_id: u64,
     },
+    /// Set Whisper language override for a client
+    SetLanguage {
+        command_id: Option<String>,
+        client_id: u64,
+        language: String,
+    },
+    /// Delete a channel
+    DeleteChannel {
+        command_id: Option<String>,
+        channel_id: u64,
+        force: bool,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -88,12 +100,12 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetServerState { command_id },
         ),
-        WebSocketCommand::Speak { command_id, text, voice } => (
+        WebSocketCommand::Speak { command_id, text, voice, speed } => (
             WebSocketEvent::command_success(
                 command_id,
                 Some("Speech queued".to_string()),
             ),
-            CommandAction::Speak { text, voice },
+            CommandAction::Speak { text, voice, speed },
         ),
         WebSocketCommand::StopSpeaking { command_id } => (
             WebSocketEvent::command_success(
@@ -144,6 +156,14 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::DeactivateListener { command_id, client_id } => (
             WebSocketEvent::command_success(command_id.clone(), Some("Deactivating listener...".to_string())),
             CommandAction::DeactivateListener { command_id, client_id },
+        ),
+        WebSocketCommand::SetLanguage { command_id, client_id, language } => (
+            WebSocketEvent::command_success(command_id.clone(), Some(format!("Setting language to '{}'...", language))),
+            CommandAction::SetLanguage { command_id, client_id, language },
+        ),
+        WebSocketCommand::DeleteChannel { command_id, channel_id, force } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Deleting channel...".to_string())),
+            CommandAction::DeleteChannel { command_id, channel_id, force: force.unwrap_or(false) },
         ),
     }
 }

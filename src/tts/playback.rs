@@ -143,6 +143,7 @@ impl AudioPlayer {
         &self,
         text: String,
         voice: Option<String>,
+        speed: Option<f32>,
         synthesizer: Arc<dyn TtsSynthesizer>,
     ) -> Result<()> {
         let text_for_synth = text.clone();
@@ -150,7 +151,7 @@ impl AudioPlayer {
         // CPU-bound: synthesize + resample + encode in a blocking task
         let opus_frames = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
             // 1. Synthesize text → PCM (TTS-specific sample rate)
-            let tts_audio = synthesizer.synthesize(&text_for_synth, voice.as_deref())?;
+            let tts_audio = synthesizer.synthesize(&text_for_synth, voice.as_deref(), speed)?;
             info!(
                 "{} produced {} samples at {}Hz ({:.1}s)",
                 synthesizer.name(),
@@ -203,10 +204,11 @@ impl AudioPlayer {
         &self,
         text: String,
         voice: Option<String>,
+        speed: Option<f32>,
         synthesizer: Arc<dyn TtsSynthesizer>,
     ) -> Result<()> {
         self.stop();
-        self.speak(text, voice, synthesizer).await
+        self.speak(text, voice, speed, synthesizer).await
     }
 
     /// Play pre-encoded cached opus frames directly (skipping TTS synthesis).

@@ -114,11 +114,12 @@ impl HttpTtsSynthesizer {
 }
 
 impl TtsSynthesizer for HttpTtsSynthesizer {
-    fn synthesize(&self, text: &str, voice: Option<&str>) -> Result<TtsAudio> {
+    fn synthesize(&self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<TtsAudio> {
         let voice = voice.unwrap_or(&self.default_voice);
+        let speed = speed.unwrap_or(1.15).clamp(0.25, 4.0);
         info!(
-            "HTTP TTS request: '{}' (voice: {}, model: {})",
-            text, voice, self.model
+            "HTTP TTS request: '{}' (voice: {}, model: {}, speed: {})",
+            text, voice, self.model, speed
         );
 
         let body = serde_json::json!({
@@ -126,7 +127,7 @@ impl TtsSynthesizer for HttpTtsSynthesizer {
             "input": text,
             "voice": voice,
             "response_format": "wav",
-            "speed": 1.15
+            "speed": speed
         });
 
         let mut request = self

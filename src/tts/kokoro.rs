@@ -43,7 +43,7 @@ impl KokoroSynthesizer {
 }
 
 impl TtsSynthesizer for KokoroSynthesizer {
-    fn synthesize(&self, text: &str, voice: Option<&str>) -> Result<TtsAudio> {
+    fn synthesize(&self, text: &str, voice: Option<&str>, _speed: Option<f32>) -> Result<TtsAudio> {
         let voice = voice.unwrap_or(&self.default_voice);
         info!("Kokoro synthesizing: '{}' (voice: {})", text, voice);
 
