@@ -18,6 +18,19 @@ use crate::models::{BotConfig, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
 
+/// Persist language preferences to disk (WS server context)
+fn save_language_prefs_ws(overrides: &HashMap<String, String>) {
+    let _ = std::fs::create_dir_all("data");
+    match serde_json::to_string_pretty(overrides) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write("data/language_prefs.json", json) {
+                warn!("Failed to save language prefs: {}", e);
+            }
+        }
+        Err(e) => warn!("Failed to serialize language prefs: {}", e),
+    }
+}
+
 /// Shared TS3 connection handle, set once connected.
 /// `None` if TS3 is not yet connected.
 pub type SharedTs3Handle = Arc<tokio::sync::Mutex<Option<tsclientlib::sync::SyncConnectionHandle>>>;
@@ -45,8 +58,8 @@ struct AppState {
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Shared buffer manager for activating speaker listening
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
-    /// Per-speaker Whisper language overrides
-    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<u64, String>>>>,
+    /// Per-speaker Whisper language overrides (UID -> lang code)
+    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
 }
 
 /// Run the WebSocket server
@@ -60,7 +73,7 @@ pub async fn run_server(
     ts3_handle: SharedTs3Handle,
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
-    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<u64, String>>>>,
+    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -589,15 +602,37 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                         CommandAction::SetLanguage { command_id, client_id, language } => {
                             if let Some(ref lo) = state.language_overrides {
-                                let mut overrides = lo.lock().await;
-                                if language == "auto" {
-                                    overrides.remove(&client_id);
-                                    info!("Language override removed for client {} via WS", client_id);
-                                    let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language reset to auto-detect for client {}", client_id))));
+                                // Resolve UID from client_id via TS3 state
+                                let mut handle_guard = ts3_handle.lock().await;
+                                let uid_opt = if let Some(ref mut sender) = *handle_guard {
+                                    sender.with_connection(move |con| {
+                                        con.get_state().ok().and_then(|state| {
+                                            state.clients.iter()
+                                                .find(|(_, c)| c.id.0 == client_id as u16)
+                                                .filter(|(_, c)| c.uid.is_some())
+                                                .map(|(_, c)| base64::encode(&c.uid.as_ref().unwrap().0))
+                                        })
+                                    }).await.ok().flatten()
                                 } else {
-                                    overrides.insert(client_id, language.clone());
-                                    info!("Language override set to '{}' for client {} via WS", language, client_id);
-                                    let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language set to '{}' for client {}", language, client_id))));
+                                    None
+                                };
+                                drop(handle_guard);
+
+                                if let Some(uid) = uid_opt {
+                                    let mut overrides = lo.lock().await;
+                                    if language == "auto" {
+                                        overrides.remove(&uid);
+                                        info!("Language override removed for {} (client {}) via WS", uid, client_id);
+                                        let _ = save_language_prefs_ws(&overrides);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language reset to auto-detect for client {}", client_id))));
+                                    } else {
+                                        overrides.insert(uid.clone(), language.clone());
+                                        info!("Language override set to '{}' for {} (client {}) via WS", language, uid, client_id);
+                                        let _ = save_language_prefs_ws(&overrides);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language set to '{}' for client {}", language, client_id))));
+                                    }
+                                } else {
+                                    let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Could not resolve UID for client {}", client_id)));
                                 }
                             } else {
                                 let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Language overrides not available".to_string()));

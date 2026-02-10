@@ -19,6 +19,7 @@ use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use serde_json;
 
 // SyncConnection for bidirectional communication
 use tsclientlib::prelude::*;
@@ -36,6 +37,15 @@ enum WhisperResult {
         audio_len: usize,
         detected_language: Option<String>,
     },
+}
+
+/// Persist language preferences to disk
+fn save_language_prefs(overrides: &HashMap<String, String>) -> Result<()> {
+    let _ = std::fs::create_dir_all("data");
+    let json = serde_json::to_string_pretty(overrides)?;
+    std::fs::write("data/language_prefs.json", json)?;
+    info!("Saved {} language preference(s)", overrides.len());
+    Ok(())
 }
 
 #[tokio::main]
@@ -93,8 +103,26 @@ async fn main() -> Result<()> {
     let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
     let buffer_manager_for_ws = Some(buffer_manager.clone());
 
-    // Per-user language overrides for Whisper transcription (speaker_id -> ISO 639-1 code)
-    let language_overrides: Arc<Mutex<HashMap<u64, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Per-user language overrides for Whisper transcription (UID -> ISO 639-1 code)
+    // Persisted to data/language_prefs.json across restarts
+    let language_overrides: Arc<Mutex<HashMap<String, String>>> = {
+        let prefs_path = "data/language_prefs.json";
+        let map = if let Ok(data) = std::fs::read_to_string(prefs_path) {
+            match serde_json::from_str::<HashMap<String, String>>(&data) {
+                Ok(m) => {
+                    info!("Loaded {} language preference(s) from {}", m.len(), prefs_path);
+                    m
+                }
+                Err(e) => {
+                    warn!("Failed to parse {}: {}, starting fresh", prefs_path, e);
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        Arc::new(Mutex::new(map))
+    };
     let language_overrides_for_ws = Some(language_overrides.clone());
 
     // Spawn TS3 client connection task
@@ -398,10 +426,10 @@ async fn main() -> Result<()> {
                                             let whisper_tx_clone = whisper_tx.clone();
                                             let api_clone = whisper_api.clone();
 
-                                            // Resolve per-user language override before spawn_blocking
+                                            // Resolve per-user language override (by UID) before spawn_blocking
                                             let lang_override = {
                                                 let overrides = language_overrides.lock().await;
-                                                overrides.get(&speaker_id).cloned()
+                                                overrides.get(&speaker_uid).cloned()
                                             };
 
                                             tokio::task::spawn_blocking(move || {
@@ -590,12 +618,12 @@ async fn main() -> Result<()> {
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
                                                     ));
                                                 } else if msg_lower.starts_with("!lang") {
-                                                    let sender_id = invoker.id.0 as u64;
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
                                                         // Reset to auto-detect
                                                         let mut overrides = language_overrides.lock().await;
-                                                        overrides.remove(&sender_id);
+                                                        overrides.remove(&sender_uid);
+                                                        let _ = save_language_prefs(&overrides);
                                                         drop(overrides);
                                                         let _ = ts3_msg_tx.try_send("🌍 Langue : auto-détection".to_string());
                                                     } else {
@@ -604,7 +632,8 @@ async fn main() -> Result<()> {
                                                         let valid_langs = ["fr", "en", "de", "es", "it", "pt", "nl", "ru", "ja", "ko", "zh", "ar", "pl", "cs", "sv", "da", "fi", "no", "tr", "uk", "ro", "hu", "el", "he", "th", "vi", "id", "ms", "hi", "bn"];
                                                         if valid_langs.contains(&lang_code.as_str()) {
                                                             let mut overrides = language_overrides.lock().await;
-                                                            overrides.insert(sender_id, lang_code.clone());
+                                                            overrides.insert(sender_uid.clone(), lang_code.clone());
+                                                            let _ = save_language_prefs(&overrides);
                                                             drop(overrides);
                                                             let _ = ts3_msg_tx.try_send(format!("🌍 Langue forcée : [b]{}[/b]", lang_code));
                                                         } else {
