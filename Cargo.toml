@@ -42,9 +42,7 @@ anyhow = "1.0"
 thiserror = "1.0"
 base64 = "0.13"
 tsproto-packets = "0.1.0"
-rustpotter = { version = "3.0.2", default-features = false }
 # Porcupine: using direct FFI to libpv_porcupine.so (in porcupine/ dir)
-half = "=2.4.1"
 
 [dev-dependencies]
 # Testing utilities

@@ -14,7 +14,6 @@ use base64;
 use ts3_bot::audio::{
     SpeakerBufferManager,
     TranscriptionPipeline,
-    WakeWordPipeline,
 };
 use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
 use std::collections::HashMap;
@@ -28,7 +27,6 @@ use ts_bookkeeping::{MessageTarget, DisconnectOptions, Reason};
 
 /// Results from background whisper tasks
 enum WhisperResult {
-    WakeWordCheck { speaker_id: u64, detected: bool, text: String },
     Transcription {
         speaker_id: u64,
         speaker_name: String,
@@ -100,10 +98,6 @@ async fn main() -> Result<()> {
 
         // Initialize audio processing components
         info!("Initializing audio processing components");
-
-        // Wake word detection is now handled by Rustpotter (no Whisper model needed)
-        // WakeWordPipeline is no longer loaded — saves ~150MB RAM
-        let wake_detector: Option<Arc<Mutex<WakeWordPipeline>>> = None;
 
         // Initialize Whisper API transcriber (uses same key as TTS)
         let whisper_api: Option<Arc<WhisperApiTranscriber>> = config.tts_api_key.as_ref()
@@ -331,40 +325,6 @@ async fn main() -> Result<()> {
                         // Process results from background whisper tasks
                         Some(result) = whisper_rx.recv() => {
                             match result {
-                                WhisperResult::WakeWordCheck { speaker_id, detected, text } => {
-                                    {
-                                        let bm_guard = buffer_manager.lock().await;
-                                        if let Some(buf) = bm_guard.get_buffer(speaker_id) {
-                                            if buf.is_active { continue; }
-                                        }
-                                    }
-                                    if detected {
-                                        info!("🎯 Wake word detected from speaker {}! text='{}'", speaker_id, text);
-                                        if let Some(ref player) = audio_player {
-                                            if player.is_speaking() { player.stop(); }
-                                        }
-                                        let mut bm = buffer_manager.lock().await;
-                                        if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                            buf.activate();
-                                            buf.clear();
-                                            buf.mark_wake_check();
-                                            let name = buf.speaker_name.clone();
-                                            drop(bm);
-                                            let _ = ts3_msg_tx.try_send(format!("J'ecoute, {} ?", name));
-                                            if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
-                                                let frames = (**cached).clone();
-                                                let player_ref = player.clone();
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = player_ref.play_cached(frames, "Oui ?".to_string()).await {
-                                                        warn!("Failed to play wake confirmation: {}", e);
-                                                    }
-                                                });
-                                            }
-                                        }
-                                    } else if !text.is_empty() {
-                                        info!("Wake word check: '{}' (no match)", text);
-                                    }
-                                }
                                 WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
                                     // command field is unused in new architecture (no wake word stripping needed)
                                     let _ = command;
@@ -688,7 +648,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 SyncStreamItem::Audio(audio_data) => {
-                                    if wake_detector.is_some() || transcription_pipeline.is_some() || whisper_api.is_some() {
+                                    if transcription_pipeline.is_some() || whisper_api.is_some() {
                                         let audio_inner = audio_data.data();
                                         let data = audio_inner.data();
 
