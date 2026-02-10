@@ -2,6 +2,12 @@ use anyhow::{Result, anyhow};
 use tracing::info;
 use std::time::Instant;
 
+/// Result from Whisper API transcription, including detected language.
+pub struct TranscriptionResult {
+    pub text: String,
+    pub language: Option<String>,
+}
+
 /// Transcriber that uses the OpenAI Whisper API instead of local whisper.
 #[derive(Clone)]
 pub struct WhisperApiTranscriber {
@@ -20,7 +26,8 @@ impl WhisperApiTranscriber {
     }
 
     /// Transcribe f32 audio samples (16kHz mono) via the OpenAI Whisper API.
-    pub fn transcribe(&self, samples: &[f32], language: Option<&str>) -> Result<String> {
+    /// Returns text + detected language. If language is None, Whisper auto-detects.
+    pub fn transcribe(&self, samples: &[f32], language: Option<&str>) -> Result<TranscriptionResult> {
         let start = Instant::now();
         let wav_data = samples_to_wav(samples);
         let duration_secs = samples.len() as f32 / 16000.0;
@@ -43,7 +50,7 @@ impl WhisperApiTranscriber {
         body.extend_from_slice(self.model.as_bytes());
         body.extend_from_slice(b"\r\n");
 
-        // language field
+        // language field (if provided, forces language; otherwise Whisper auto-detects)
         if let Some(lang) = language {
             body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
             body.extend_from_slice(b"Content-Disposition: form-data; name=\"language\"\r\n\r\n");
@@ -51,10 +58,10 @@ impl WhisperApiTranscriber {
             body.extend_from_slice(b"\r\n");
         }
 
-        // response_format field
+        // response_format = verbose_json to get detected language
         body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
         body.extend_from_slice(b"Content-Disposition: form-data; name=\"response_format\"\r\n\r\n");
-        body.extend_from_slice(b"text");
+        body.extend_from_slice(b"verbose_json");
         body.extend_from_slice(b"\r\n");
 
         // closing boundary
@@ -73,14 +80,24 @@ impl WhisperApiTranscriber {
             .send_bytes(&body)
             .map_err(|e| anyhow!("WhisperAPI request failed: {}", e))?;
 
-        let text = response.into_string()
+        let response_text = response.into_string()
             .map_err(|e| anyhow!("WhisperAPI response read failed: {}", e))?;
 
-        let elapsed = start.elapsed();
-        let trimmed = text.trim().to_string();
-        info!("WhisperAPI: transcribed in {:.1}s -> \"{}\"", elapsed.as_secs_f32(), trimmed);
+        // Parse verbose_json response: {"text": "...", "language": "french", ...}
+        let json: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("WhisperAPI JSON parse failed: {} (response: {})", e, &response_text[..response_text.len().min(200)]))?;
 
-        Ok(trimmed)
+        let text = json["text"].as_str().unwrap_or("").trim().to_string();
+        let language_detected = json["language"].as_str().map(|s| s.to_string());
+
+        let elapsed = start.elapsed();
+        info!("WhisperAPI: transcribed in {:.1}s, lang={} -> \"{}\"",
+            elapsed.as_secs_f32(),
+            language_detected.as_deref().unwrap_or("?"),
+            text
+        );
+
+        Ok(TranscriptionResult { text, language: language_detected })
     }
 }
 

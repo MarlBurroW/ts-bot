@@ -34,6 +34,7 @@ enum WhisperResult {
         text: String,
         command: Option<String>,
         audio_len: usize,
+        detected_language: Option<String>,
     },
 }
 
@@ -325,13 +326,13 @@ async fn main() -> Result<()> {
                         // Process results from background whisper tasks
                         Some(result) = whisper_rx.recv() => {
                             match result {
-                                WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len } => {
+                                WhisperResult::Transcription { speaker_id, speaker_name, speaker_uid, text, command, audio_len, detected_language } => {
                                     // command field is unused in new architecture (no wake word stripping needed)
                                     let _ = command;
                                     let command_text = text.clone();
 
                                     if !command_text.trim().is_empty() {
-                                        info!("Transcription from {}: '{}' (raw: '{}')", speaker_name, command_text, text);
+                                        info!("Transcription from {} [{}]: '{}'", speaker_name, detected_language.as_deref().unwrap_or("?"), command_text);
 
                                         // Send transcription to TS3 chat
                                         let _ = ts3_msg_tx.try_send(
@@ -345,7 +346,7 @@ async fn main() -> Result<()> {
                                             speaker_name,
                                             text: command_text,
                                             confidence: None,
-                                            language: Some("fr".to_string()),
+                                            language: detected_language,
                                             duration_ms: (audio_len as u64 * 1000) / 16000,
                                         };
 
@@ -396,12 +397,12 @@ async fn main() -> Result<()> {
                                             tokio::task::spawn_blocking(move || {
                                                 let audio_len = full_audio.len();
 
-                                                // Try API transcription first, fall back to local if available
-                                                let result = if let Some(ref api) = api_clone {
-                                                    match api.transcribe(&full_audio, Some("fr")) {
-                                                        Ok(text) if !text.is_empty() => {
-                                                            info!("WhisperAPI transcription succeeded");
-                                                            Ok(text)
+                                                // Try API transcription first (auto-detect language), fall back to local
+                                                let (text_result, detected_lang) = if let Some(ref api) = api_clone {
+                                                    match api.transcribe(&full_audio, None) {
+                                                        Ok(tr) if !tr.text.is_empty() => {
+                                                            info!("WhisperAPI transcription succeeded (lang: {})", tr.language.as_deref().unwrap_or("?"));
+                                                            (Ok(tr.text), tr.language)
                                                         }
                                                         Ok(_) => {
                                                             warn!("WhisperAPI returned empty");
@@ -410,9 +411,9 @@ async fn main() -> Result<()> {
                                                                 let mut lock = tp.blocking_lock();
                                                                 let r = lock.transcribe(&full_audio);
                                                                 drop(lock);
-                                                                r
+                                                                (r, None)
                                                             } else {
-                                                                Ok(String::new())
+                                                                (Ok(String::new()), None)
                                                             }
                                                         }
                                                         Err(e) => {
@@ -422,9 +423,9 @@ async fn main() -> Result<()> {
                                                                 let mut lock = tp.blocking_lock();
                                                                 let r = lock.transcribe(&full_audio);
                                                                 drop(lock);
-                                                                r
+                                                                (r, None)
                                                             } else {
-                                                                Err(anyhow::anyhow!("WhisperAPI failed and no local model: {}", e))
+                                                                (Err(anyhow::anyhow!("WhisperAPI failed and no local model: {}", e)), None)
                                                             }
                                                         }
                                                     }
@@ -432,12 +433,12 @@ async fn main() -> Result<()> {
                                                     let mut lock = tp.blocking_lock();
                                                     let r = lock.transcribe(&full_audio);
                                                     drop(lock);
-                                                    r
+                                                    (r, None)
                                                 } else {
-                                                    Err(anyhow::anyhow!("No transcription backend available"))
+                                                    (Err(anyhow::anyhow!("No transcription backend available")), None)
                                                 };
 
-                                                match result {
+                                                match text_result {
                                                     Ok(text) => {
                                                         let _ = whisper_tx_clone.blocking_send(WhisperResult::Transcription {
                                                             speaker_id,
@@ -446,6 +447,7 @@ async fn main() -> Result<()> {
                                                             text,
                                                             command: None,
                                                             audio_len,
+                                                            detected_language: detected_lang,
                                                         });
                                                     }
                                                     Err(e) => {
@@ -457,6 +459,7 @@ async fn main() -> Result<()> {
                                                             text: String::new(),
                                                             command: None,
                                                             audio_len,
+                                                            detected_language: None,
                                                         });
                                                     }
                                                 }
