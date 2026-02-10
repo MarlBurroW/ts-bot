@@ -537,8 +537,40 @@ async fn main() -> Result<()> {
                                                         "📋 Commandes disponibles :\n\
                                                          • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
+                                                         • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string()
                                                     );
+                                                } else if msg_lower.contains("!status") {
+                                                    // Build status report
+                                                    let bm = buffer_manager.lock().await;
+                                                    let active_speakers = bm.get_active_speakers();
+                                                    let active_names: Vec<String> = active_speakers.iter().filter_map(|id| {
+                                                        bm.get_buffer(*id).map(|b| b.speaker_name.clone())
+                                                    }).collect();
+                                                    drop(bm);
+
+                                                    let speaking = if let Some(ref player) = audio_player {
+                                                        player.is_speaking()
+                                                    } else { false };
+
+                                                    let listen_str = if active_names.is_empty() {
+                                                        "Personne".to_string()
+                                                    } else {
+                                                        active_names.join(", ")
+                                                    };
+                                                    let speak_str = if speaking { "Oui 🔊" } else { "Non" };
+
+                                                    let _ = ts3_msg_tx.try_send(format!(
+                                                        "📊 [b]Status Marlbot[/b]\n\
+                                                         • Écoute : {}\n\
+                                                         • Parle : {}\n\
+                                                         • TTS : {}\n\
+                                                         • Whisper : {}",
+                                                        listen_str,
+                                                        speak_str,
+                                                        if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
+                                                        if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
+                                                    ));
                                                 } else if msg_lower.contains("!stop") {
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name = invoker.name.to_string();
