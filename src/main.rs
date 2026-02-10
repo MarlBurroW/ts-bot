@@ -177,19 +177,20 @@ async fn main() -> Result<()> {
     let language_overrides_for_ws = Some(language_overrides.clone());
 
     // Load persisted bot state (mute + volume)
-    let (persisted_muted, persisted_volume) = {
+    let (persisted_muted, persisted_volume, persisted_voice) = {
         std::fs::read_to_string("data/bot_state.json")
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| {
                 let muted = v.get("muted").and_then(|m| m.as_bool()).unwrap_or(false);
                 let vol = v.get("volume").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
-                (muted, vol)
+                let voice = v.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string());
+                (muted, vol, voice)
             })
-            .unwrap_or((false, 100))
+            .unwrap_or((false, 100, None))
     };
-    if persisted_muted || persisted_volume != 100 {
-        info!("Restored bot state: muted={}, volume={}%", persisted_muted, persisted_volume);
+    if persisted_muted || persisted_volume != 100 || persisted_voice.is_some() {
+        info!("Restored bot state: muted={}, volume={}%, voice={}", persisted_muted, persisted_volume, persisted_voice.as_deref().unwrap_or("config default"));
     }
 
     // Shared TTS mute flag (when true, agent TTS is skipped but text echo still sent)
@@ -200,6 +201,12 @@ async fn main() -> Result<()> {
     let tts_volume = Arc::new(std::sync::atomic::AtomicU8::new(persisted_volume));
     let tts_volume_for_ws = Some(tts_volume.clone());
     let tts_volume_for_ts3 = Some(tts_volume.clone());
+
+    // Shared default TTS voice (overridable at runtime via !voice, persisted)
+    let default_voice: Arc<std::sync::RwLock<String>> = Arc::new(std::sync::RwLock::new(
+        persisted_voice.unwrap_or_else(|| config.tts_voice.clone())
+    ));
+    let default_voice_for_tts = default_voice.clone();
 
     // Last spoken text for !replay (text, voice, speed)
     let last_spoken: Arc<Mutex<Option<(String, Option<String>, Option<f32>)>>> = Arc::new(Mutex::new(None));
@@ -519,8 +526,12 @@ async fn main() -> Result<()> {
                             // Emit speak_started event
                             let _ = tts_event_tx.send(WebSocketEvent::speak_started(request.text.clone()));
                             let start = std::time::Instant::now();
+                            // Use default voice override if no explicit voice in request
+                            let effective_voice = request.voice.or_else(|| {
+                                Some(default_voice_for_tts.read().unwrap().clone())
+                            });
                             let speak_result = player_clone
-                                .speak(request.text.clone(), request.voice, request.speed, synth_clone.clone())
+                                .speak(request.text.clone(), effective_voice, request.speed, synth_clone.clone())
                                 .await;
                             let duration_ms = start.elapsed().as_millis() as u64;
                             match speak_result {
@@ -860,6 +871,7 @@ async fn main() -> Result<()> {
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
                                                          • [b]!replay[/b] — rejouer le dernier message TTS\n\
+                                                         • [b]!voice[/b] [nom] — changer la voix par défaut (alloy/echo/nova/onyx...)\n\
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
                                                          • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
@@ -915,6 +927,7 @@ async fn main() -> Result<()> {
                                                     let rt_status = reply_target;
                                                     let rs_status = reply_sender_id;
                                                     let bm_status = buffer_manager.clone();
+                                                    let default_voice_status = default_voice.clone();
                                                     tokio::spawn(async move {
                                                         let channel_info = sender_for_status.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
@@ -938,6 +951,11 @@ async fn main() -> Result<()> {
                                                             _ => "Inconnu".to_string(),
                                                         };
 
+                                                        let voice_str = default_voice_status.read().unwrap().clone();
+                                                        let silence_ms = {
+                                                            let bm = bm_status.lock().await;
+                                                            bm.silence_timeout_ms()
+                                                        };
                                                         let _ = tx_status.try_send(OutgoingMessage::reply(format!(
                                                             "📊 [b]Status Marlbot[/b]\n\
                                                              • Channel : {}\n\
@@ -945,6 +963,7 @@ async fn main() -> Result<()> {
                                                              • Écoute : {}\n\
                                                              • Parle : {}\n\
                                                              • Volume : {}%\n\
+                                                             • Voix : {}\n\
                                                              • TTS : {}\n\
                                                              • Whisper : {}\n\
                                                              • Greetings : {}\n\
@@ -954,13 +973,11 @@ async fn main() -> Result<()> {
                                                             listen_str,
                                                             speak_str,
                                                             vol,
+                                                            voice_str,
                                                             tts_str,
                                                             whisper_str,
                                                             greet_str,
-                                                            {
-                                                                let bm = bm_status.lock().await;
-                                                                bm.silence_timeout_ms()
-                                                            }
+                                                            silence_ms,
                                                         ), &rt_status, rs_status));
                                                     });
                                                 } else if msg_lower.starts_with("!who") {
@@ -1226,7 +1243,8 @@ async fn main() -> Result<()> {
                                                             // Persist volume
                                                             let _ = std::fs::create_dir_all("data");
                                                             let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
-                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{}}}"#, muted_val, vol));
+                                                            let voice_val = default_voice.read().unwrap().clone();
+                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{},"voice":"{}"}}"#, muted_val, vol, voice_val));
                                                             let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("{} Volume réglé à {}%", emoji, vol),
@@ -1239,12 +1257,43 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id,
                                                         ));
                                                     }
+                                                } else if msg_lower.starts_with("!voice") {
+                                                    let valid_voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
+                                                    let parts: Vec<&str> = message.split_whitespace().collect();
+                                                    if parts.len() < 2 {
+                                                        // Show current default voice
+                                                        let current = default_voice.read().unwrap().clone();
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🎙️ Voix par défaut : [b]{}[/b]\nVoix disponibles : {}", current, valid_voices.join(", ")),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    } else {
+                                                        let requested = parts[1].to_lowercase();
+                                                        if valid_voices.contains(&requested.as_str()) {
+                                                            *default_voice.write().unwrap() = requested.clone();
+                                                            // Persist
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
+                                                            let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
+                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{},"voice":"{}"}}"#, muted_val, vol_val, requested));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("❌ Voix inconnue : \"{}\"\nVoix disponibles : {}", parts[1], valid_voices.join(", ")),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        }
+                                                    }
                                                 } else if msg_lower == "!mute" {
                                                     tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist mute state
                                                     let _ = std::fs::create_dir_all("data");
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":true,"volume":{}}}"#, vol_val));
+                                                    let voice_val = default_voice.read().unwrap().clone();
+                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":true,"volume":{},"voice":"{}"}}"#, vol_val, voice_val));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -1254,7 +1303,8 @@ async fn main() -> Result<()> {
                                                     // Persist unmute state
                                                     let _ = std::fs::create_dir_all("data");
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":false,"volume":{}}}"#, vol_val));
+                                                    let voice_val = default_voice.read().unwrap().clone();
+                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":false,"volume":{},"voice":"{}"}}"#, vol_val, voice_val));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
