@@ -164,12 +164,28 @@ async fn main() -> Result<()> {
     };
     let language_overrides_for_ws = Some(language_overrides.clone());
 
+    // Load persisted bot state (mute + volume)
+    let (persisted_muted, persisted_volume) = {
+        std::fs::read_to_string("data/bot_state.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| {
+                let muted = v.get("muted").and_then(|m| m.as_bool()).unwrap_or(false);
+                let vol = v.get("volume").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
+                (muted, vol)
+            })
+            .unwrap_or((false, 100))
+    };
+    if persisted_muted || persisted_volume != 100 {
+        info!("Restored bot state: muted={}, volume={}%", persisted_muted, persisted_volume);
+    }
+
     // Shared TTS mute flag (when true, agent TTS is skipped but text echo still sent)
-    let tts_muted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tts_muted = Arc::new(std::sync::atomic::AtomicBool::new(persisted_muted));
     let tts_muted_for_tts = tts_muted.clone();
 
     // Shared TTS volume (0-200, default 100%)
-    let tts_volume = Arc::new(std::sync::atomic::AtomicU8::new(100));
+    let tts_volume = Arc::new(std::sync::atomic::AtomicU8::new(persisted_volume));
     let tts_volume_for_ws = Some(tts_volume.clone());
     let tts_volume_for_ts3 = Some(tts_volume.clone());
 
@@ -1192,6 +1208,10 @@ async fn main() -> Result<()> {
                                                             if let Some(ref player) = audio_player {
                                                                 player.set_volume(vol);
                                                             }
+                                                            // Persist volume
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
+                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{}}}"#, muted_val, vol));
                                                             let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("{} Volume réglé à {}%", emoji, vol),
@@ -1206,12 +1226,20 @@ async fn main() -> Result<()> {
                                                     }
                                                 } else if msg_lower == "!mute" {
                                                     tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                    // Persist mute state
+                                                    let _ = std::fs::create_dir_all("data");
+                                                    let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":true,"volume":{}}}"#, vol_val));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
                                                         &reply_target, reply_sender_id,
                                                     ));
                                                 } else if msg_lower == "!unmute" {
                                                     tts_muted.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                    // Persist unmute state
+                                                    let _ = std::fs::create_dir_all("data");
+                                                    let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":false,"volume":{}}}"#, vol_val));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
