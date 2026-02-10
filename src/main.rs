@@ -252,26 +252,7 @@ async fn main() -> Result<()> {
                     });
                 }
 
-                // Unmute bot input/output so TTS audio is sent without warnings
-                {
-                    let mut unmute_sender = ts3_sender.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                        let mut cmd = OutCommand::new(
-                            Direction::C2S, Flags::empty(),
-                            PacketType::Command, "clientupdate",
-                        );
-                        cmd.write_arg("client_input_hardware", &1);
-                        cmd.write_arg("client_output_hardware", &1);
-                        cmd.write_arg("client_input_muted", &0);
-                        cmd.write_arg("client_output_muted", &0);
-                        match unmute_sender.send_command(cmd).await {
-                            Ok(()) => info!("Bot unmuted (input/output hardware enabled)"),
-                            Err(e) => warn!("Failed to unmute bot: {:?}", e),
-                        }
-                    });
-                }
+                // NOTE: clientupdate unmute removed — was corrupting event stream
 
                 // Channel for queuing outgoing TS3 chat messages
                 let (ts3_msg_tx, mut ts3_msg_rx) = tokio::sync::mpsc::channel::<OutgoingMessage>(10);
@@ -397,9 +378,17 @@ async fn main() -> Result<()> {
                 if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                     let player_clone = player.clone();
                     let synth_clone = synth.clone();
+                    let tts_chat_tx = ts3_msg_tx.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
+                            // Echo TTS text to TS3 channel chat so muted users can read it
+                            let display_text = if request.text.len() > 300 {
+                                format!("🤖 {}...", &request.text[..300])
+                            } else {
+                                format!("🤖 {}", request.text)
+                            };
+                            let _ = tts_chat_tx.try_send(OutgoingMessage::channel(display_text));
                             if let Err(e) = player_clone
                                 .speak(request.text, request.voice, request.speed, synth_clone.clone())
                                 .await
