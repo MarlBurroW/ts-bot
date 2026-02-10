@@ -211,6 +211,25 @@ async fn main() -> Result<()> {
 
                 info!("Starting event loop to keep connection alive");
 
+                // Resolve own client ID for self-message filtering
+                let own_client_id: Arc<std::sync::RwLock<Option<u16>>> =
+                    Arc::new(std::sync::RwLock::new(None));
+                {
+                    let own_id_ref = own_client_id.clone();
+                    let mut own_id_sender = ts3_sender.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if let Ok(Some(id)) = own_id_sender.with_connection(move |con| {
+                            con.get_state().ok().map(|s| s.own_client.0)
+                        }).await {
+                            if let Ok(mut w) = own_id_ref.write() {
+                                *w = Some(id);
+                            }
+                            info!("Own client ID resolved: {}", id);
+                        }
+                    });
+                }
+
                 // Channel for queuing outgoing TS3 chat messages
                 let (ts3_msg_tx, mut ts3_msg_rx) = tokio::sync::mpsc::channel::<String>(10);
 
@@ -545,9 +564,10 @@ async fn main() -> Result<()> {
                                                 info!("TS3 Message from {}: {}", invoker.name, message);
 
                                                 // Ignore our own messages to prevent infinite loops
-                                                let bot_name = invoker.name.to_lowercase();
-                                                if bot_name.starts_with("marlbot") {
-                                                    continue;
+                                                if let Ok(guard) = own_client_id.read() {
+                                                    if *guard == Some(invoker.id.0) {
+                                                        continue;
+                                                    }
                                                 }
 
                                                 let (message_type, channel_id) = match target {
