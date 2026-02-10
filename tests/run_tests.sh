@@ -310,6 +310,15 @@ test_volume_set() {
     fi
 }
 
+test_come_command() {
+    # !come should respond (either "J'arrive" if different channel, or "déjà dans" if same)
+    if sq_send_and_check "!come" "déjà dans\|J'arrive" 5; then
+        log_pass "!come responds correctly"
+    else
+        log_fail "!come responds correctly" "no response in logs"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -335,6 +344,7 @@ test_listen_command
 test_stop_command
 test_volume_command
 test_volume_set
+test_come_command
 test_bot_does_not_crash
 
 echo ""

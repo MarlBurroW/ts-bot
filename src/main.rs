@@ -739,6 +739,7 @@ async fn main() -> Result<()> {
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
                                                          • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
+                                                         • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -943,6 +944,63 @@ async fn main() -> Result<()> {
                                                             }
                                                         });
                                                     }
+                                                } else if msg_lower.starts_with("!come") || msg_lower.starts_with("!viens") {
+                                                    // Move the bot to the sender's channel
+                                                    let sender_id = invoker.id.0 as u64;
+                                                    let mut sender_for_come = ts3_sender.clone();
+                                                    let tx_come = ts3_msg_tx.clone();
+                                                    let rt_come = reply_target;
+                                                    let rs_come = reply_sender_id;
+                                                    tokio::spawn(async move {
+                                                        let result = sender_for_come.with_connection(move |con| {
+                                                            if let Ok(state) = con.get_state() {
+                                                                let sender_cid = tsclientlib::ClientId(sender_id as u16);
+                                                                let bot_channel = state.clients.get(&state.own_client).map(|c| c.channel);
+                                                                let sender_channel = state.clients.get(&sender_cid).map(|c| c.channel);
+                                                                match (bot_channel, sender_channel) {
+                                                                    (Some(bot_ch), Some(sender_ch)) if bot_ch == sender_ch => {
+                                                                        let ch_name = state.channels.get(&bot_ch).map(|c| c.name.clone()).unwrap_or_default();
+                                                                        Some(Err(format!("Je suis déjà dans [b]{}[/b] 😏", ch_name)))
+                                                                    }
+                                                                    (_, Some(sender_ch)) => {
+                                                                        let ch_name = state.channels.get(&sender_ch).map(|c| c.name.clone()).unwrap_or_default();
+                                                                        let own_id = state.own_client.0;
+                                                                        Some(Ok((own_id, sender_ch.0 as u64, ch_name)))
+                                                                    }
+                                                                    _ => Some(Err("❌ Impossible de trouver ton channel.".to_string()))
+                                                                }
+                                                            } else {
+                                                                Some(Err("❌ État TS3 indisponible.".to_string()))
+                                                            }
+                                                        }).await;
+
+                                                        match result {
+                                                            Ok(Some(Ok((own_id, channel_id, channel_name)))) => {
+                                                                use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                let mut cmd = OutCommand::new(
+                                                                    Direction::C2S, Flags::empty(),
+                                                                    PacketType::Command, "clientmove",
+                                                                );
+                                                                cmd.write_arg("clid", &own_id);
+                                                                cmd.write_arg("cid", &channel_id);
+                                                                match sender_for_come.send_command(cmd).await {
+                                                                    Ok(()) => {
+                                                                        let _ = std::fs::write(".last_channel", channel_id.to_string());
+                                                                        let _ = tx_come.try_send(OutgoingMessage::reply(format!("✅ J'arrive dans [b]{}[/b] !", channel_name), &rt_come, rs_come));
+                                                                    }
+                                                                    Err(e) => {
+                                                                        let _ = tx_come.try_send(OutgoingMessage::reply(format!("❌ Impossible de bouger: {:?}", e), &rt_come, rs_come));
+                                                                    }
+                                                                }
+                                                            }
+                                                            Ok(Some(Err(msg))) => {
+                                                                let _ = tx_come.try_send(OutgoingMessage::reply(msg, &rt_come, rs_come));
+                                                            }
+                                                            _ => {
+                                                                let _ = tx_come.try_send(OutgoingMessage::reply("❌ Erreur interne.".to_string(), &rt_come, rs_come));
+                                                            }
+                                                        }
+                                                    });
                                                 } else if msg_lower.starts_with("!channels") {
                                                     // Show all server channels with user counts
                                                     let mut sender_for_ch = ts3_sender.clone();
