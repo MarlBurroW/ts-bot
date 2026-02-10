@@ -1,5 +1,17 @@
 mod ts3;
 
+/// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8 char.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent};
 use ts3_bot::websocket;
@@ -478,7 +490,7 @@ async fn main() -> Result<()> {
                             }
                             // Echo TTS text to TS3 channel chat so muted users can read it
                             let display_text = if request.text.len() > 300 {
-                                format!("🤖 {}...", &request.text[..300])
+                                format!("🤖 {}...", truncate_str(&request.text, 300))
                             } else {
                                 format!("🤖 {}", request.text)
                             };
@@ -489,7 +501,7 @@ async fn main() -> Result<()> {
                                 let mut hist = tts_chat_history.lock().await;
                                 let ts = chrono::Utc::now().format("%H:%M").to_string();
                                 let truncated = if request.text.len() > 200 {
-                                    format!("{}...", &request.text[..200])
+                                    format!("{}...", truncate_str(&request.text, 200))
                                 } else {
                                     request.text.clone()
                                 };
@@ -1454,7 +1466,7 @@ async fn main() -> Result<()> {
                                                         let mut lines = vec![format!("📜 Derniers {} message(s) :", hist.len() - start)];
                                                         for (ts, author, text) in hist.iter().skip(start) {
                                                             let truncated = if text.len() > 100 {
-                                                                format!("{}...", &text[..100])
+                                                                format!("{}...", truncate_str(text, 100))
                                                             } else {
                                                                 text.clone()
                                                             };
