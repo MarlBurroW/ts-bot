@@ -93,6 +93,9 @@ async fn main() -> Result<()> {
     let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
     let buffer_manager_for_ws = Some(buffer_manager.clone());
 
+    // Per-user language overrides for Whisper transcription (speaker_id -> ISO 639-1 code)
+    let language_overrides: Arc<Mutex<HashMap<u64, String>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -394,12 +397,18 @@ async fn main() -> Result<()> {
                                             let whisper_tx_clone = whisper_tx.clone();
                                             let api_clone = whisper_api.clone();
 
+                                            // Resolve per-user language override before spawn_blocking
+                                            let lang_override = {
+                                                let overrides = language_overrides.lock().await;
+                                                overrides.get(&speaker_id).cloned()
+                                            };
+
                                             tokio::task::spawn_blocking(move || {
                                                 let audio_len = full_audio.len();
 
-                                                // Try API transcription first (auto-detect language), fall back to local
+                                                // Try API transcription (with language override if set), fall back to local
                                                 let (text_result, detected_lang) = if let Some(ref api) = api_clone {
-                                                    match api.transcribe(&full_audio, None) {
+                                                    match api.transcribe(&full_audio, lang_override.as_deref()) {
                                                         Ok(tr) if !tr.text.is_empty() => {
                                                             info!("WhisperAPI transcription succeeded (lang: {})", tr.language.as_deref().unwrap_or("?"));
                                                             (Ok(tr.text), tr.language)
@@ -544,6 +553,7 @@ async fn main() -> Result<()> {
                                                         "📋 Commandes disponibles :\n\
                                                          • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
+                                                         • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string()
                                                     );
@@ -578,6 +588,28 @@ async fn main() -> Result<()> {
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
                                                     ));
+                                                } else if msg_lower.starts_with("!lang") {
+                                                    let sender_id = invoker.id.0 as u64;
+                                                    let parts: Vec<&str> = message.split_whitespace().collect();
+                                                    if parts.len() < 2 || parts[1] == "auto" {
+                                                        // Reset to auto-detect
+                                                        let mut overrides = language_overrides.lock().await;
+                                                        overrides.remove(&sender_id);
+                                                        drop(overrides);
+                                                        let _ = ts3_msg_tx.try_send("🌍 Langue : auto-détection".to_string());
+                                                    } else {
+                                                        let lang_code = parts[1].to_lowercase();
+                                                        // Validate: must be 2-letter ISO 639-1
+                                                        let valid_langs = ["fr", "en", "de", "es", "it", "pt", "nl", "ru", "ja", "ko", "zh", "ar", "pl", "cs", "sv", "da", "fi", "no", "tr", "uk", "ro", "hu", "el", "he", "th", "vi", "id", "ms", "hi", "bn"];
+                                                        if valid_langs.contains(&lang_code.as_str()) {
+                                                            let mut overrides = language_overrides.lock().await;
+                                                            overrides.insert(sender_id, lang_code.clone());
+                                                            drop(overrides);
+                                                            let _ = ts3_msg_tx.try_send(format!("🌍 Langue forcée : [b]{}[/b]", lang_code));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", lang_code));
+                                                        }
+                                                    }
                                                 } else if msg_lower.contains("!stop") {
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name = invoker.name.to_string();
