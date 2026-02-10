@@ -1093,9 +1093,20 @@ async fn main() -> Result<()> {
                                             Event::PropertyRemoved { id, old, .. } => {
                                                 if let (PropertyId::Client(client_id), PropertyValue::Client(client)) = (id, old) {
                                                     let uid = client.uid.as_ref().map(|u| base64::encode(&u.0));
-                                                    info!("Client disconnected: {} (id: {}, uid: {:?})", client.name, client_id.0, uid);
+                                                    let client_id_u64 = client_id.0 as u64;
+                                                    info!("Client disconnected: {} (id: {}, uid: {:?})", client.name, client_id_u64, uid);
+                                                    // Deactivate listening if this user was being listened to
+                                                    {
+                                                        let mut bm = buffer_manager.lock().await;
+                                                        if let Some(buffer) = bm.get_buffer_mut(client_id_u64) {
+                                                            if buffer.is_active {
+                                                                buffer.deactivate();
+                                                                info!("🔇 Auto-deactivated listening for disconnected user {} (id: {})", client.name, client_id_u64);
+                                                            }
+                                                        }
+                                                    }
                                                     let _ = event_tx_clone.send(WebSocketEvent::ClientDisconnected {
-                                                        client_id: client_id.0 as u64,
+                                                        client_id: client_id_u64,
                                                         client_name: client.name.clone(),
                                                         uid,
                                                     });
@@ -1107,19 +1118,35 @@ async fn main() -> Result<()> {
                                                     let client_id_u64 = client_id.0 as u64;
                                                     let mut sender = ts3_sender.clone();
                                                     let tx = event_tx_clone.clone();
+                                                    let bm_for_move = buffer_manager.clone();
                                                     tokio::spawn(async move {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
                                                                 let is_self = state.own_client == client_id;
+                                                                let bot_channel = state.clients.get(&state.own_client).map(|c| c.channel.0 as u64);
                                                                 state.clients.get(&client_id).map(|c| {
                                                                     let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
                                                                     let old_ch_name = state.channels.get(&tsclientlib::ChannelId(old_channel.0)).map(|ch| ch.name.clone());
                                                                     let new_ch_name = state.channels.get(&c.channel).map(|ch| ch.name.clone());
-                                                                    (c.name.clone(), c.channel.0 as u64, is_self, uid, old_ch_name, new_ch_name)
+                                                                    (c.name.clone(), c.channel.0 as u64, is_self, uid, old_ch_name, new_ch_name, bot_channel)
                                                                 })
                                                             })
                                                         }).await;
-                                                        if let Ok(Some((name, new_channel_id, is_self, uid, old_ch_name, new_ch_name))) = result {
+                                                        if let Ok(Some((name, new_channel_id, is_self, uid, old_ch_name, new_ch_name, bot_channel))) = result {
+                                                            // Deactivate listening if user moved away from the bot's channel
+                                                            if !is_self {
+                                                                if let Some(bot_ch) = bot_channel {
+                                                                    if new_channel_id != bot_ch {
+                                                                        let mut bm = bm_for_move.lock().await;
+                                                                        if let Some(buffer) = bm.get_buffer_mut(client_id_u64) {
+                                                                            if buffer.is_active {
+                                                                                buffer.deactivate();
+                                                                                info!("🔇 Auto-deactivated listening for {} (moved to different channel)", name);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                             info!("Client moved: {} ({} -> {})", name, old_channel_id, new_channel_id);
                                                             let _ = tx.send(WebSocketEvent::ClientMoved {
                                                                 client_id: client_id_u64,
