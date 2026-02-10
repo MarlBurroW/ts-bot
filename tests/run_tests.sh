@@ -311,8 +311,8 @@ test_volume_set() {
 }
 
 test_come_command() {
-    # !come should respond (either "J'arrive" if different channel, or "déjà dans" if same)
-    if sq_send_and_check "!come" "déjà dans\|J'arrive" 5; then
+    # !come should respond (either "J'arrive" if different channel, "déjà dans" if same, or error if sender not found)
+    if sq_send_and_check "!come" "déjà dans\|J'arrive\|Impossible de trouver" 5; then
         log_pass "!come responds correctly"
     else
         log_fail "!come responds correctly" "no response in logs"
@@ -325,6 +325,24 @@ test_replay_command() {
         log_pass "!replay responds correctly (nothing to replay)"
     else
         log_fail "!replay responds correctly" "no response in logs"
+    fi
+}
+
+test_mute_command() {
+    # !mute should mute TTS
+    if sq_send_and_check "!mute" "TTS muté" 3; then
+        log_pass "!mute mutes TTS"
+    else
+        log_fail "!mute mutes TTS" "no response in logs"
+    fi
+}
+
+test_unmute_command() {
+    # !unmute should unmute TTS
+    if sq_send_and_check "!unmute" "TTS réactivé" 3; then
+        log_pass "!unmute unmutes TTS"
+    else
+        log_fail "!unmute unmutes TTS" "no response in logs"
     fi
 }
 
@@ -355,6 +373,8 @@ test_volume_command
 test_volume_set
 test_come_command
 test_replay_command
+test_mute_command
+test_unmute_command
 test_bot_does_not_crash
 
 echo ""

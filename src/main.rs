@@ -164,6 +164,10 @@ async fn main() -> Result<()> {
     };
     let language_overrides_for_ws = Some(language_overrides.clone());
 
+    // Shared TTS mute flag (when true, agent TTS is skipped but text echo still sent)
+    let tts_muted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tts_muted_for_tts = tts_muted.clone();
+
     // Shared TTS volume (0-200, default 100%)
     let tts_volume = Arc::new(std::sync::atomic::AtomicU8::new(100));
     let tts_volume_for_ws = Some(tts_volume.clone());
@@ -409,6 +413,7 @@ async fn main() -> Result<()> {
                     let tts_chat_tx = ts3_msg_tx.clone();
                     let tts_event_tx = event_tx_clone.clone();
                     let last_spoken_ws = last_spoken_for_ws.clone();
+                    let tts_muted_clone = tts_muted_for_tts.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
@@ -424,6 +429,14 @@ async fn main() -> Result<()> {
                                 format!("🤖 {}", request.text)
                             };
                             let _ = tts_chat_tx.try_send(OutgoingMessage::channel(display_text));
+
+                            // If TTS is muted, skip speech but still emit events
+                            if tts_muted_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                info!("TTS muted — skipping speech for: '{}'", &request.text[..request.text.len().min(50)]);
+                                let _ = tts_event_tx.send(WebSocketEvent::speak_completed(request.text, 0));
+                                continue;
+                            }
+
                             // Emit speak_started event
                             let _ = tts_event_tx.send(WebSocketEvent::speak_started(request.text.clone()));
                             let start = std::time::Instant::now();
@@ -753,6 +766,7 @@ async fn main() -> Result<()> {
                                                          • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
                                                          • [b]!replay[/b] — rejouer le dernier message TTS\n\
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
+                                                         • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -790,7 +804,8 @@ async fn main() -> Result<()> {
                                                     };
 
                                                     let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
-                                                    let tts_str = if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" };
+                                                    let is_muted = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let tts_str = if !config.tts_enabled { "Désactivé ❌" } else if is_muted { "Muté 🔇" } else { "Activé ✅" };
                                                     let whisper_str = if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" };
 
                                                     // Query TS3 state for channel info
@@ -1096,6 +1111,18 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id,
                                                         ));
                                                     }
+                                                } else if msg_lower == "!mute" {
+                                                    tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                        "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
+                                                        &reply_target, reply_sender_id,
+                                                    ));
+                                                } else if msg_lower == "!unmute" {
+                                                    tts_muted.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                        "🔊 TTS réactivé — je parle à nouveau !".to_string(),
+                                                        &reply_target, reply_sender_id,
+                                                    ));
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
