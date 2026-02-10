@@ -11,6 +11,85 @@ use super::TtsSynthesizer;
 use crate::audio::encoder::OpusEncoder;
 use crate::audio::decoder::OpusDecoder;
 
+/// Strip markdown formatting from text before sending to TTS.
+/// Removes **bold**, *italic*, __underline__, ~~strikethrough~~, `code`,
+/// ```code blocks```, [links](url), and # headers.
+fn strip_markdown(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip ```code blocks```
+        if i + 2 < len && chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            i += 3;
+            // Skip until closing ```
+            while i + 2 < len && !(chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`') {
+                i += 1;
+            }
+            if i + 2 < len { i += 3; }
+            continue;
+        }
+        // Skip `inline code` — keep content
+        if chars[i] == '`' {
+            i += 1;
+            while i < len && chars[i] != '`' {
+                result.push(chars[i]);
+                i += 1;
+            }
+            if i < len { i += 1; } // skip closing `
+            continue;
+        }
+        // Skip ** or __ (bold)
+        if i + 1 < len && ((chars[i] == '*' && chars[i + 1] == '*') || (chars[i] == '_' && chars[i + 1] == '_')) {
+            i += 2;
+            continue;
+        }
+        // Skip ~~ (strikethrough)
+        if i + 1 < len && chars[i] == '~' && chars[i + 1] == '~' {
+            i += 2;
+            continue;
+        }
+        // Skip single * or _ (italic) — but not in the middle of words
+        if (chars[i] == '*' || chars[i] == '_')
+            && (i == 0 || !chars[i - 1].is_alphanumeric() || i + 1 >= len || !chars[i + 1].is_alphanumeric())
+        {
+            i += 1;
+            continue;
+        }
+        // Skip [text](url) — keep text
+        if chars[i] == '[' {
+            if let Some(close_bracket) = chars[i..].iter().position(|&c| c == ']') {
+                let abs_close = i + close_bracket;
+                if abs_close + 1 < len && chars[abs_close + 1] == '(' {
+                    // Extract link text
+                    for j in (i + 1)..abs_close {
+                        result.push(chars[j]);
+                    }
+                    // Skip (url)
+                    if let Some(close_paren) = chars[abs_close + 1..].iter().position(|&c| c == ')') {
+                        i = abs_close + 1 + close_paren + 1;
+                    } else {
+                        i = abs_close + 2;
+                    }
+                    continue;
+                }
+            }
+        }
+        // Skip # headers at start of line
+        if chars[i] == '#' && (i == 0 || chars[i - 1] == '\n') {
+            while i < len && chars[i] == '#' { i += 1; }
+            if i < len && chars[i] == ' ' { i += 1; }
+            continue;
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
 /// Request sent to the playback task
 struct PlaybackRequest {
     /// Pre-encoded Opus frames ready to send to TS3
@@ -190,7 +269,7 @@ impl AudioPlayer {
         speed: Option<f32>,
         synthesizer: Arc<dyn TtsSynthesizer>,
     ) -> Result<()> {
-        let text_for_synth = text.clone();
+        let text_for_synth = strip_markdown(&text);
         let vol = self.volume.load(Ordering::Relaxed);
 
         // CPU-bound: synthesize + resample + encode in a blocking task

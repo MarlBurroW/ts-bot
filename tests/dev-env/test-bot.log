@@ -1,23 +1,23 @@
-[2m2026-02-10T16:34:48.330520Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Bot starting with configuration [3mconfig[0m[2m=[0mBotConfig { ts3_server: "localhost:9988", ts3_nickname: "MarlbotTest", ts3_password: Some(""), ts3_channel: Some(""), ws_host: "0.0.0.0", ws_port: 8081, log_level: "INFO", log_file: Some(""), reconnect_max_attempts: 10, reconnect_initial_delay_ms: 1000, reconnect_max_delay_ms: 60000, tts_enabled: false, tts_api_url: "https://api.openai.com/v1/audio/speech", tts_api_key: Some("notset"), tts_model: "tts-1", tts_voice: "onyx" }
-[2m2026-02-10T16:34:48.330614Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Bot ready (TS3 + WebSocket servers running)
-[2m2026-02-10T16:34:48.330685Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Starting TS3 client connection
-[2m2026-02-10T16:34:48.330695Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Initializing audio processing components
-[2m2026-02-10T16:34:48.330701Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m WhisperAPI transcriber initialized (using TTS_API_KEY)
-[2m2026-02-10T16:34:48.330705Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Whisper API available — skipping local ggml-small.bin model (~500MB RAM saved)
-[2m2026-02-10T16:34:48.330711Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Connecting to TS3 server: localhost:9988
-[2m2026-02-10T16:34:48.330719Z[0m [32m INFO[0m [2mts3_bot::websocket::server[0m[2m:[0m WebSocket server listening on 0.0.0.0:8081
-[2m2026-02-10T16:34:48.331017Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Loaded TS3 identity (level 9)
-[2m2026-02-10T16:34:48.331074Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Successfully connected to TS3 server
-[2m2026-02-10T16:34:48.331082Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 client connected successfully
-[2m2026-02-10T16:34:48.331098Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Starting event loop to keep connection alive
-[2m2026-02-10T16:34:48.331113Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TTS is disabled
-[2m2026-02-10T16:34:48.516352Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: MarlbotTest (id: 204, uid: Some("7hW6SOfCukQ3vv5XDXnI1YLacEg="))
-[2m2026-02-10T16:34:48.832095Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Own client ID resolved: 204
-[2m2026-02-10T16:34:51.343667Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 205, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:51.344293Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 205, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:53.360795Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 206, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:53.361270Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !help
-[2m2026-02-10T16:34:53.361525Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📋 Commandes disponibles :
+[2m2026-02-10T17:03:29.539920Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Bot starting with configuration [3mconfig[0m[2m=[0mBotConfig { ts3_server: "localhost:9988", ts3_nickname: "MarlbotTest", ts3_password: Some(""), ts3_channel: Some(""), ws_host: "0.0.0.0", ws_port: 8081, log_level: "INFO", log_file: Some(""), reconnect_max_attempts: 10, reconnect_initial_delay_ms: 1000, reconnect_max_delay_ms: 60000, tts_enabled: false, tts_api_url: "https://api.openai.com/v1/audio/speech", tts_api_key: Some("notset"), tts_model: "tts-1", tts_voice: "onyx" }
+[2m2026-02-10T17:03:29.540015Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Bot ready (TS3 + WebSocket servers running)
+[2m2026-02-10T17:03:29.540083Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Starting TS3 client connection
+[2m2026-02-10T17:03:29.540091Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Initializing audio processing components
+[2m2026-02-10T17:03:29.540094Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m WhisperAPI transcriber initialized (using TTS_API_KEY)
+[2m2026-02-10T17:03:29.540097Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Whisper API available — skipping local ggml-small.bin model (~500MB RAM saved)
+[2m2026-02-10T17:03:29.540100Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Connecting to TS3 server: localhost:9988
+[2m2026-02-10T17:03:29.540147Z[0m [32m INFO[0m [2mts3_bot::websocket::server[0m[2m:[0m WebSocket server listening on 0.0.0.0:8081
+[2m2026-02-10T17:03:29.540380Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Loaded TS3 identity (level 9)
+[2m2026-02-10T17:03:29.540433Z[0m [32m INFO[0m [2mts3_bot::ts3::client[0m[2m:[0m Successfully connected to TS3 server
+[2m2026-02-10T17:03:29.540436Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 client connected successfully
+[2m2026-02-10T17:03:29.540451Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Starting event loop to keep connection alive
+[2m2026-02-10T17:03:29.540464Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TTS is disabled
+[2m2026-02-10T17:03:29.714743Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: MarlbotTest (id: 239, uid: Some("7hW6SOfCukQ3vv5XDXnI1YLacEg="))
+[2m2026-02-10T17:03:30.042680Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Own client ID resolved: 239
+[2m2026-02-10T17:03:32.551736Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 240, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:32.551944Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 240, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:34.569025Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 241, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:34.569178Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !help
+[2m2026-02-10T17:03:34.569364Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📋 Commandes disponibles :
 • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale
 • [b]!stop[/b] — arrêter l'écoute + couper la parole
 • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]
@@ -28,8 +28,8 @@
 • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)
 • [b]!status[/b] — afficher l'état du bot
 • [b]!help[/b] — afficher cette aide
-[2m2026-02-10T16:34:53.361757Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 206, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:53.362509Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📋 Commandes disponibles :
+[2m2026-02-10T17:03:34.569533Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 241, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:34.570445Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📋 Commandes disponibles :
 • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale
 • [b]!stop[/b] — arrêter l'écoute + couper la parole
 • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]
@@ -40,9 +40,9 @@
 • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)
 • [b]!status[/b] — afficher l'état du bot
 • [b]!help[/b] — afficher cette aide
-[2m2026-02-10T16:34:55.880257Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 207, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:55.880494Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !help
-[2m2026-02-10T16:34:55.880672Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📋 Commandes disponibles :
+[2m2026-02-10T17:03:37.083103Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 242, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:37.083175Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !help
+[2m2026-02-10T17:03:37.083289Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📋 Commandes disponibles :
 • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale
 • [b]!stop[/b] — arrêter l'écoute + couper la parole
 • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]
@@ -53,8 +53,8 @@
 • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)
 • [b]!status[/b] — afficher l'état du bot
 • [b]!help[/b] — afficher cette aide
-[2m2026-02-10T16:34:55.880777Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 207, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:34:55.881796Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📋 Commandes disponibles :
+[2m2026-02-10T17:03:37.083347Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 242, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:37.083639Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📋 Commandes disponibles :
 • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale
 • [b]!stop[/b] — arrêter l'écoute + couper la parole
 • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]
@@ -65,14 +65,15 @@
 • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)
 • [b]!status[/b] — afficher l'état du bot
 • [b]!help[/b] — afficher cette aide
-[2m2026-02-10T16:35:00.901273Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: check out !help for info
-[2m2026-02-10T16:35:00.901457Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 208, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:04.914835Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 209, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:04.914935Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: hello world
-[2m2026-02-10T16:35:04.915120Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 209, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:08.940359Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 210, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:08.940586Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !status
-[2m2026-02-10T16:35:08.940659Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📊 [b]Status Marlbot[/b]
+[2m2026-02-10T17:03:42.103365Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 243, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:42.103723Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: check out !help for info
+[2m2026-02-10T17:03:42.104295Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 243, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:46.124855Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 244, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:46.125022Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: hello world
+[2m2026-02-10T17:03:46.125327Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 244, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:50.150923Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 245, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:50.151073Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !status
+[2m2026-02-10T17:03:50.151242Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📊 [b]Status Marlbot[/b]
 • Channel : Default Channel (2 👤)
 • Uptime : 20s
 • Écoute : Personne
@@ -80,8 +81,8 @@
 • Volume : 100%
 • TTS : Désactivé ❌
 • Whisper : API ✅
-[2m2026-02-10T16:35:08.940744Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 210, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:08.941041Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📊 [b]Status Marlbot[/b]
+[2m2026-02-10T17:03:50.151393Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 245, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:50.152049Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📊 [b]Status Marlbot[/b]
 • Channel : Default Channel (2 👤)
 • Uptime : 20s
 • Écoute : Personne
@@ -89,48 +90,45 @@
 • Volume : 100%
 • TTS : Désactivé ❌
 • Whisper : API ✅
-[2m2026-02-10T16:35:11.456057Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 211, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:11.456182Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !who
-[2m2026-02-10T16:35:11.456227Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 211, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:11.456392Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): ❌ Impossible de trouver ton channel.
-[2m2026-02-10T16:35:11.456565Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: ❌ Impossible de trouver ton channel.
-[2m2026-02-10T16:35:13.978447Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 212, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:13.978517Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !channels
-[2m2026-02-10T16:35:13.978613Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 212, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:13.978640Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📡 [b]Channels[/b] — 1 channels, 2 utilisateurs
+[2m2026-02-10T17:03:52.675018Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !who
+[2m2026-02-10T17:03:52.675248Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 246, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:52.675494Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): ❌ Impossible de trouver ton channel.
+[2m2026-02-10T17:03:52.676187Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: ❌ Impossible de trouver ton channel.
+[2m2026-02-10T17:03:55.190842Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !channels
+[2m2026-02-10T17:03:55.190923Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 247, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:55.190998Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 247, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:55.191034Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 📡 [b]Channels[/b] — 1 channels, 2 utilisateurs
 • Default Channel [b](2)[/b]
-[2m2026-02-10T16:35:13.978836Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📡 [b]Channels[/b] — 1 channels, 2 utilisateurs
+[2m2026-02-10T17:03:55.191203Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 📡 [b]Channels[/b] — 1 channels, 2 utilisateurs
 • Default Channel [b](2)[/b]
-[2m2026-02-10T16:35:16.501835Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 213, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:16.502320Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !listen
-[2m2026-02-10T16:35:16.502355Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🎤 Chat trigger from serveradmin (id: 213)
-[2m2026-02-10T16:35:16.502471Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Activated transcription for speaker serveradmin
-[2m2026-02-10T16:35:16.502490Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Cleared audio buffer for speaker serveradmin
-[2m2026-02-10T16:35:16.502608Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 213, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:16.502634Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Deactivated transcription for speaker serveradmin
-[2m2026-02-10T16:35:16.502647Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🔇 Auto-deactivated listening for disconnected user serveradmin (id: 213)
-[2m2026-02-10T16:35:16.502752Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🎤 J'écoute, serveradmin !
-[2m2026-02-10T16:35:16.503146Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🎤 J'écoute, serveradmin !
-[2m2026-02-10T16:35:19.016783Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 214, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:19.017072Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !listen
-[2m2026-02-10T16:35:19.017097Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🎤 Chat trigger from serveradmin (id: 214)
-[2m2026-02-10T16:35:19.017154Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Activated transcription for speaker serveradmin
-[2m2026-02-10T16:35:19.017169Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Cleared audio buffer for speaker serveradmin
-[2m2026-02-10T16:35:19.017291Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 214, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:19.017308Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Deactivated transcription for speaker serveradmin
-[2m2026-02-10T16:35:19.017323Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🔇 Auto-deactivated listening for disconnected user serveradmin (id: 214)
-[2m2026-02-10T16:35:19.017613Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🎤 J'écoute, serveradmin !
-[2m2026-02-10T16:35:19.018195Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🎤 J'écoute, serveradmin !
-[2m2026-02-10T16:35:23.037115Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 215, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:23.037232Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !stop
-[2m2026-02-10T16:35:23.037288Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔇 Rien à arrêter.
-[2m2026-02-10T16:35:23.037384Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 215, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:23.037535Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🔇 Rien à arrêter.
-[2m2026-02-10T16:35:25.560173Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 216, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:25.560557Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !volume
-[2m2026-02-10T16:35:25.560668Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 216, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:25.561446Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔊 Volume actuel : 100%
-[2m2026-02-10T16:35:28.084438Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 217, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:28.084681Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !volume 75
-[2m2026-02-10T16:35:28.084773Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 217, uid: Some("c2VydmVyYWRtaW4="))
-[2m2026-02-10T16:35:28.085248Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔉 Volume réglé à 75%
+[2m2026-02-10T17:03:57.714518Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !listen
+[2m2026-02-10T17:03:57.714564Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🎤 Chat trigger from serveradmin (id: 248)
+[2m2026-02-10T17:03:57.714620Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Activated transcription for speaker serveradmin
+[2m2026-02-10T17:03:57.714626Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Cleared audio buffer for speaker serveradmin
+[2m2026-02-10T17:03:57.714675Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 248, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:03:57.714685Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Deactivated transcription for speaker serveradmin
+[2m2026-02-10T17:03:57.714704Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🔇 Auto-deactivated listening for disconnected user serveradmin (id: 248)
+[2m2026-02-10T17:03:57.714778Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🎤 J'écoute, serveradmin !
+[2m2026-02-10T17:03:57.715035Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🎤 J'écoute, serveradmin !
+[2m2026-02-10T17:04:00.228920Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !listen
+[2m2026-02-10T17:04:00.228974Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🎤 Chat trigger from serveradmin (id: 249)
+[2m2026-02-10T17:04:00.229138Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Activated transcription for speaker serveradmin
+[2m2026-02-10T17:04:00.229154Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Cleared audio buffer for speaker serveradmin
+[2m2026-02-10T17:04:00.229276Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 249, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:00.229299Z[0m [32m INFO[0m [2mts3_bot::audio::buffer[0m[2m:[0m Deactivated transcription for speaker serveradmin
+[2m2026-02-10T17:04:00.229312Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m 🔇 Auto-deactivated listening for disconnected user serveradmin (id: 249)
+[2m2026-02-10T17:04:00.229484Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🎤 J'écoute, serveradmin !
+[2m2026-02-10T17:04:00.230070Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🎤 J'écoute, serveradmin !
+[2m2026-02-10T17:04:04.248837Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 250, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:04.249009Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !stop
+[2m2026-02-10T17:04:04.249125Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔇 Rien à arrêter.
+[2m2026-02-10T17:04:04.249342Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 250, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:04.249562Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from Marlbot: 🔇 Rien à arrêter.
+[2m2026-02-10T17:04:06.773667Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 251, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:06.774155Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !volume
+[2m2026-02-10T17:04:06.774320Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔊 Volume actuel : 100%
+[2m2026-02-10T17:04:06.774556Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 251, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:09.298638Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client connected: serveradmin (id: 252, uid: Some("c2VydmVyYWRtaW4="))
+[2m2026-02-10T17:04:09.298749Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 Message from serveradmin: !volume 75
+[2m2026-02-10T17:04:09.298801Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m TS3 chat (channel): 🔉 Volume réglé à 75%
+[2m2026-02-10T17:04:09.298889Z[0m [32m INFO[0m [2mts3_bot[0m[2m:[0m Client disconnected: serveradmin (id: 252, uid: Some("c2VydmVyYWRtaW4="))
