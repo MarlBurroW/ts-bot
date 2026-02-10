@@ -294,6 +294,24 @@ async fn main() -> Result<()> {
                     });
                 }
 
+                // Subscribe to ALL channels so we can see all clients on the server
+                // (by default, tsclientlib only sees clients in the bot's current channel)
+                {
+                    let mut sub_sender = ts3_sender.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                        let cmd = OutCommand::new(
+                            Direction::C2S, Flags::empty(),
+                            PacketType::Command, "channelsubscribeall",
+                        );
+                        match sub_sender.send_command(cmd).await {
+                            Ok(()) => info!("Subscribed to all channels (full client visibility)"),
+                            Err(e) => warn!("Failed to subscribe to all channels: {:?}", e),
+                        }
+                    });
+                }
+
                 // NOTE: clientupdate unmute removed — was corrupting event stream
 
                 // Channel for queuing outgoing TS3 chat messages
