@@ -64,6 +64,15 @@ pub enum CommandAction {
         channel_id: u64,
         force: bool,
     },
+    /// Set TTS volume (0-200)
+    SetVolume {
+        command_id: Option<String>,
+        volume: u8,
+    },
+    /// Get current TTS volume
+    GetVolume {
+        command_id: Option<String>,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -164,6 +173,14 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::DeleteChannel { command_id, channel_id, force } => (
             WebSocketEvent::command_success(command_id.clone(), Some("Deleting channel...".to_string())),
             CommandAction::DeleteChannel { command_id, channel_id, force: force.unwrap_or(false) },
+        ),
+        WebSocketCommand::SetVolume { command_id, volume } => (
+            WebSocketEvent::command_success(command_id.clone(), Some(format!("Volume set to {}%", volume))),
+            CommandAction::SetVolume { command_id, volume },
+        ),
+        WebSocketCommand::GetVolume { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetVolume { command_id },
         ),
     }
 }

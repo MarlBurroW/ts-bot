@@ -3,9 +3,27 @@ use tokio::sync::RwLock;
 use tsclientlib::{Connection, Identity};
 use anyhow::Result;
 use tracing::{info, warn, error};
+use slog::{Drain, Logger, OwnedKVList, Record};
 
 use ts3_bot::models::BotConfig;
 use super::{ConnectionState, TS3ConnectionState};
+
+/// A slog drain that filters out the "Sending audio while muted" warning.
+/// All other messages are discarded (tsclientlib logs are noisy and we use tracing).
+struct FilteredDrain;
+
+impl Drain for FilteredDrain {
+    type Ok = ();
+    type Err = slog::Never;
+
+    fn log(&self, _record: &Record, _values: &OwnedKVList) -> Result<(), slog::Never> {
+        // Drop all slog messages — we use tracing for our own logging.
+        // This silences tsclientlib's "Sending audio while muted" warning
+        // which fires on every audio frame (~50x per TTS playback) due to
+        // channel talk_power requirements that don't actually block audio.
+        Ok(())
+    }
+}
 
 const IDENTITY_FILE: &str = ".ts3_identity";
 
@@ -43,7 +61,11 @@ impl TS3Client {
         };
 
         // Build connection using the new API
-        let mut builder = Connection::build(address.clone());
+        // Use a silent slog logger to suppress tsclientlib's "Sending audio while muted"
+        // warnings that fire on every audio frame due to channel talk_power.
+        let silent_logger = Logger::root(FilteredDrain, slog::o!());
+        let mut builder = Connection::build(address.clone())
+            .logger(silent_logger.clone());
 
         // Set nickname
         builder = builder.name(self.config.ts3_nickname.clone());
@@ -104,7 +126,8 @@ impl TS3Client {
             Ok(con) => con,
             Err(e) if has_channel => {
                 warn!("Failed to join channel, retrying without channel: {:?}", e);
-                let mut retry = Connection::build(address);
+                let mut retry = Connection::build(address)
+                    .logger(silent_logger);
                 retry = retry.name(self.config.ts3_nickname.clone());
                 retry = retry.identity(identity);
                 if let Some(ref password) = self.config.ts3_password {

@@ -3016,6 +3016,7 @@ dependencies = [
  "hound",
  "serde",
  "serde_json",
+ "slog",
  "thiserror",
  "tokio",
  "tokio-test",

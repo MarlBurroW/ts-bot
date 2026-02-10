@@ -294,6 +294,22 @@ test_stop_command() {
     fi
 }
 
+test_volume_command() {
+    if sq_send_and_check "!volume" "Volume actuel"; then
+        log_pass "!volume shows current volume"
+    else
+        log_fail "!volume shows current volume" "no response in logs"
+    fi
+}
+
+test_volume_set() {
+    if sq_send_and_check "!volume 75" "Volume réglé à 75"; then
+        log_pass "!volume 75 sets volume"
+    else
+        log_fail "!volume 75 sets volume" "no response in logs"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -317,6 +333,8 @@ test_who_command
 test_channels_command
 test_listen_command
 test_stop_command
+test_volume_command
+test_volume_set
 test_bot_does_not_crash
 
 echo ""

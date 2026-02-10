@@ -60,6 +60,8 @@ struct AppState {
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
     /// Per-speaker Whisper language overrides (UID -> lang code)
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
+    /// Shared TTS volume level (0-200, 100 = normal)
+    tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
 }
 
 /// Run the WebSocket server
@@ -74,6 +76,7 @@ pub async fn run_server(
     tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
+    tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -88,6 +91,7 @@ pub async fn run_server(
         tts_stop_flag,
         buffer_manager,
         language_overrides,
+        tts_volume,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -161,6 +165,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let event_tx = state.event_broadcaster.clone();
     let tts_tx = state.tts_tx.clone();
     let tts_stop_flag = state.tts_stop_flag.clone();
+    let tts_volume = state.tts_volume.clone();
     let ts3_handle = state.ts3_handle.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
@@ -213,6 +218,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 flag.store(false, std::sync::atomic::Ordering::Relaxed);
                                 info!("TTS playback stopped via WebSocket command");
                             }
+                        }
+                        CommandAction::SetVolume { command_id, volume } => {
+                            if let Some(ref vol) = tts_volume {
+                                vol.store(volume.min(200), std::sync::atomic::Ordering::Relaxed);
+                                info!("TTS volume set to {}% via WebSocket", volume.min(200));
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(format!("Volume set to {}%", volume.min(200))),
+                                ));
+                            }
+                        }
+                        CommandAction::GetVolume { command_id } => {
+                            let vol = tts_volume.as_ref()
+                                .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(100);
+                            let _ = event_tx.send(WebSocketEvent::command_success(
+                                command_id,
+                                Some(serde_json::json!({ "volume": vol }).to_string()),
+                            ));
                         }
                         CommandAction::GetServerState { command_id } => {
                             let mut handle_guard = ts3_handle.lock().await;

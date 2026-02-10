@@ -27,6 +27,7 @@ envy = "0.4"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+slog = "2"
 
 # Audio processing
 whisper-rs = { version = "0.12", features = ["whisper-cpp-tracing"] }

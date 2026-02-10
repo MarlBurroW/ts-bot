@@ -149,6 +149,11 @@ async fn main() -> Result<()> {
     };
     let language_overrides_for_ws = Some(language_overrides.clone());
 
+    // Shared TTS volume (0-200, default 100%)
+    let tts_volume = Arc::new(std::sync::atomic::AtomicU8::new(100));
+    let tts_volume_for_ws = Some(tts_volume.clone());
+    let tts_volume_for_ts3 = Some(tts_volume.clone());
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -320,10 +325,11 @@ async fn main() -> Result<()> {
                 // AudioPlayer needs ts3_sender to send audio packets to TS3
                 let audio_player: Option<Arc<AudioPlayer>> = if config.tts_enabled {
                     info!("Initializing TTS audio player");
-                    Some(Arc::new(AudioPlayer::with_stop_flag(
+                    Some(Arc::new(AudioPlayer::with_options(
                         ts3_sender.clone(),
                         event_tx_clone.clone(),
                         tts_stop_flag_for_ts3.clone(),
+                        tts_volume_for_ts3.clone(),
                     )))
                 } else {
                     info!("TTS is disabled");
@@ -703,6 +709,7 @@ async fn main() -> Result<()> {
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
                                                          • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
+                                                         • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -739,16 +746,19 @@ async fn main() -> Result<()> {
                                                         format!("{}j {}h {}m", uptime_secs / 86400, (uptime_secs % 86400) / 3600, (uptime_secs % 3600) / 60)
                                                     };
 
+                                                    let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!(
                                                         "📊 [b]Status Marlbot[/b]\n\
                                                          • Uptime : {}\n\
                                                          • Écoute : {}\n\
                                                          • Parle : {}\n\
+                                                         • Volume : {}%\n\
                                                          • TTS : {}\n\
                                                          • Whisper : {}",
                                                         uptime_str,
                                                         listen_str,
                                                         speak_str,
+                                                        vol,
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
                                                     ), &reply_target, reply_sender_id));
@@ -921,6 +931,37 @@ async fn main() -> Result<()> {
                                                             Err(e) => { let _ = tx_ch.try_send(OutgoingMessage::reply(format!("❌ Erreur: {}", e), &rt_ch, rs_ch)); }
                                                         }
                                                     });
+                                                } else if msg_lower.starts_with("!volume") || msg_lower.starts_with("!vol") {
+                                                    let parts: Vec<&str> = message.split_whitespace().collect();
+                                                    if parts.len() < 2 {
+                                                        // Show current volume (default 100 if TTS disabled)
+                                                        let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🔊 Volume actuel : {}%", vol),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    } else if let Ok(vol) = parts[1].trim_end_matches('%').parse::<u8>() {
+                                                        if vol > 200 {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "❌ Volume entre 0 et 200 (100 = normal)".to_string(),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        } else {
+                                                            if let Some(ref player) = audio_player {
+                                                                player.set_volume(vol);
+                                                            }
+                                                            let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("{} Volume réglé à {}%", emoji, vol),
+                                                                &reply_target, reply_sender_id,
+                                                            ));
+                                                        }
+                                                    } else {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            "❌ Usage: !volume [0-200]".to_string(),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    }
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
@@ -1274,7 +1315,7 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });

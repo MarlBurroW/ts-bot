@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -30,12 +30,30 @@ pub struct AudioPlayer {
     request_tx: mpsc::Sender<PlaybackRequest>,
     /// Shared flag to interrupt playback — can be shared externally for remote stop
     is_speaking: Arc<AtomicBool>,
+    /// Volume level: 0-200 (100 = normal, 0 = mute, 200 = 2x gain). Default: 100.
+    volume: Arc<AtomicU8>,
 }
 
 impl AudioPlayer {
     /// Get a clone of the is_speaking flag (for external stop control)
     pub fn stop_flag(&self) -> Arc<AtomicBool> {
         self.is_speaking.clone()
+    }
+
+    /// Get the current volume level (0-200)
+    pub fn volume(&self) -> u8 {
+        self.volume.load(Ordering::Relaxed)
+    }
+
+    /// Set volume level (0-200). Values above 200 are clamped.
+    pub fn set_volume(&self, vol: u8) {
+        self.volume.store(vol.min(200), Ordering::Relaxed);
+        info!("Volume set to {}%", vol.min(200));
+    }
+
+    /// Get a clone of the volume Arc (for sharing with other tasks)
+    pub fn volume_arc(&self) -> Arc<AtomicU8> {
+        self.volume.clone()
     }
 
     /// Create a new AudioPlayer and spawn the background playback task.
@@ -49,12 +67,21 @@ impl AudioPlayer {
         Self::with_stop_flag(ts3_sender, event_tx, None)
     }
 
-    /// Create a new AudioPlayer with an optional external stop flag.
-    /// If provided, the flag is shared so external code can stop playback.
+    /// Create a new AudioPlayer with optional external stop flag and volume control.
     pub fn with_stop_flag(
+        ts3_sender: tsclientlib::sync::SyncConnectionHandle,
+        event_tx: tokio::sync::broadcast::Sender<crate::models::WebSocketEvent>,
+        external_flag: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self::with_options(ts3_sender, event_tx, external_flag, None)
+    }
+
+    /// Create a new AudioPlayer with optional external stop flag and volume control.
+    pub fn with_options(
         mut ts3_sender: tsclientlib::sync::SyncConnectionHandle,
         event_tx: tokio::sync::broadcast::Sender<crate::models::WebSocketEvent>,
         external_flag: Option<Arc<AtomicBool>>,
+        external_volume: Option<Arc<AtomicU8>>,
     ) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<PlaybackRequest>(16);
         let is_speaking = external_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
@@ -78,6 +105,22 @@ impl AudioPlayer {
 
                 is_speaking_clone.store(true, Ordering::Relaxed);
                 let start = std::time::Instant::now();
+
+                // Send clientupdate to ensure mute flags are cleared
+                {
+                    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                    let mut cmd = OutCommand::new(
+                        Direction::C2S, Flags::empty(),
+                        PacketType::Command, "clientupdate",
+                    );
+                    cmd.write_arg("client_input_hardware", &1);
+                    cmd.write_arg("client_output_hardware", &1);
+                    cmd.write_arg("client_input_muted", &0);
+                    cmd.write_arg("client_output_muted", &0);
+                    if let Err(e) = ts3_sender.send_command(cmd).await {
+                        warn!("Failed to send unmute command: {:?}", e);
+                    }
+                }
 
                 // Use interval instead of sleep to maintain constant 20ms pacing.
                 // sleep(20ms) after each send accumulates drift (send_time + 20ms per frame).
@@ -132,6 +175,7 @@ impl AudioPlayer {
         Self {
             request_tx,
             is_speaking,
+            volume: external_volume.unwrap_or_else(|| Arc::new(AtomicU8::new(100))),
         }
     }
 
@@ -147,6 +191,7 @@ impl AudioPlayer {
         synthesizer: Arc<dyn TtsSynthesizer>,
     ) -> Result<()> {
         let text_for_synth = text.clone();
+        let vol = self.volume.load(Ordering::Relaxed);
 
         // CPU-bound: synthesize + resample + encode in a blocking task
         let opus_frames = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
@@ -172,7 +217,15 @@ impl AudioPlayer {
                 }
             };
 
-            // 3. Encode to Opus frames
+            // 3. Apply volume scaling (if not 100%)
+            let samples_48k = if vol != 100 {
+                let gain = vol as f32 / 100.0;
+                samples_48k.into_iter().map(|s| (s * gain).clamp(-1.0, 1.0)).collect::<Vec<_>>()
+            } else {
+                samples_48k
+            };
+
+            // 4. Encode to Opus frames
             let mut encoder = OpusEncoder::new()?;
             let frames = encoder.encode_all(&samples_48k)?;
 
