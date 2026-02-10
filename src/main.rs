@@ -532,7 +532,35 @@ async fn main() -> Result<()> {
 
                                                 // Chat trigger: !listen or !marlbot activates listening for the sender
                                                 let msg_lower = message.to_lowercase();
-                                                if msg_lower.contains("!listen") || msg_lower.contains("!marlbot") {
+                                                if msg_lower.contains("!help") {
+                                                    let _ = ts3_msg_tx.try_send(
+                                                        "📋 Commandes disponibles :\n\
+                                                         • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
+                                                         • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
+                                                         • [b]!help[/b] — afficher cette aide".to_string()
+                                                    );
+                                                } else if msg_lower.contains("!stop") {
+                                                    let sender_id = invoker.id.0 as u64;
+                                                    let sender_name = invoker.name.to_string();
+                                                    // Stop TTS playback
+                                                    if let Some(ref player) = audio_player {
+                                                        if player.is_speaking() { player.stop(); }
+                                                    }
+                                                    // Deactivate listening for this user
+                                                    let mut bm = buffer_manager.lock().await;
+                                                    let was_active = if let Some(buffer) = bm.get_buffer_mut(sender_id) {
+                                                        let active = buffer.is_active;
+                                                        if active { buffer.deactivate(); }
+                                                        active
+                                                    } else { false };
+                                                    drop(bm);
+                                                    if was_active {
+                                                        info!("🛑 Stop trigger from {} (id: {})", sender_name, sender_id);
+                                                        let _ = ts3_msg_tx.try_send(format!("🛑 OK {}, j'arrête.", sender_name));
+                                                    } else {
+                                                        let _ = ts3_msg_tx.try_send("🔇 Rien à arrêter.".to_string());
+                                                    }
+                                                } else if msg_lower.contains("!listen") || msg_lower.contains("!marlbot") {
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name = invoker.name.to_string();
                                                     info!("🎤 Chat trigger from {} (id: {})", sender_name, sender_id);
