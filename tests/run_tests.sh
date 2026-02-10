@@ -346,6 +346,24 @@ test_unmute_command() {
     fi
 }
 
+test_greet_command() {
+    # !greet should show current status
+    if sq_send_and_check "!greet" "Greetings" 3; then
+        log_pass "!greet shows greeting status"
+    else
+        log_fail "!greet shows greeting status" "no response in logs"
+    fi
+}
+
+test_greet_off() {
+    # !greet off should disable greetings
+    if sq_send_and_check "!greet off" "désactivés" 3; then
+        log_pass "!greet off disables greetings"
+    else
+        log_fail "!greet off disables greetings" "no response in logs"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -375,6 +393,8 @@ test_come_command
 test_replay_command
 test_mute_command
 test_unmute_command
+test_greet_command
+test_greet_off
 test_bot_does_not_crash
 
 echo ""

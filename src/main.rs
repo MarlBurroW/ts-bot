@@ -178,6 +178,17 @@ async fn main() -> Result<()> {
     let last_spoken_for_ws = last_spoken.clone();
     let last_spoken_for_ts3 = last_spoken.clone();
 
+    // Greeting feature: greet users who join the bot's channel
+    let greet_enabled = Arc::new(std::sync::atomic::AtomicBool::new({
+        std::fs::read_to_string("data/greet.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            .unwrap_or(true) // enabled by default
+    }));
+    // Cooldown: don't greet the same user within 10 minutes (keyed by client_id)
+    let greet_cooldowns: Arc<Mutex<HashMap<u64, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -767,6 +778,7 @@ async fn main() -> Result<()> {
                                                          • [b]!replay[/b] — rejouer le dernier message TTS\n\
                                                          • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
                                                          • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
+                                                         • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -807,6 +819,7 @@ async fn main() -> Result<()> {
                                                     let is_muted = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
                                                     let tts_str = if !config.tts_enabled { "Désactivé ❌" } else if is_muted { "Muté 🔇" } else { "Activé ✅" };
                                                     let whisper_str = if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" };
+                                                    let greet_str = if greet_enabled.load(std::sync::atomic::Ordering::Relaxed) { "Activé 👋" } else { "Désactivé" };
 
                                                     // Query TS3 state for channel info
                                                     let mut sender_for_status = ts3_sender.clone();
@@ -844,14 +857,16 @@ async fn main() -> Result<()> {
                                                              • Parle : {}\n\
                                                              • Volume : {}%\n\
                                                              • TTS : {}\n\
-                                                             • Whisper : {}",
+                                                             • Whisper : {}\n\
+                                                             • Greetings : {}",
                                                             channel_str,
                                                             uptime_str,
                                                             listen_str,
                                                             speak_str,
                                                             vol,
                                                             tts_str,
-                                                            whisper_str
+                                                            whisper_str,
+                                                            greet_str
                                                         ), &rt_status, rs_status));
                                                     });
                                                 } else if msg_lower.starts_with("!who") {
@@ -1123,6 +1138,42 @@ async fn main() -> Result<()> {
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
                                                     ));
+                                                } else if msg_lower.starts_with("!greet") {
+                                                    let parts: Vec<&str> = msg_lower.split_whitespace().collect();
+                                                    if parts.len() >= 2 {
+                                                        match parts[1] {
+                                                            "on" => {
+                                                                greet_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                                let _ = std::fs::create_dir_all("data");
+                                                                let _ = std::fs::write("data/greet.json", r#"{"enabled":true}"#);
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "👋 Greetings activés — je saluerai les arrivants !".to_string(),
+                                                                    &reply_target, reply_sender_id,
+                                                                ));
+                                                            }
+                                                            "off" => {
+                                                                greet_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                                let _ = std::fs::create_dir_all("data");
+                                                                let _ = std::fs::write("data/greet.json", r#"{"enabled":false}"#);
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "🔕 Greetings désactivés.".to_string(),
+                                                                    &reply_target, reply_sender_id,
+                                                                ));
+                                                            }
+                                                            _ => {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "❌ Usage: !greet on|off".to_string(),
+                                                                    &reply_target, reply_sender_id,
+                                                                ));
+                                                            }
+                                                        }
+                                                    } else {
+                                                        let status = if greet_enabled.load(std::sync::atomic::Ordering::Relaxed) { "activés ✅" } else { "désactivés ❌" };
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("👋 Greetings : {} — !greet on|off pour changer", status),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    }
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
@@ -1373,6 +1424,9 @@ async fn main() -> Result<()> {
                                                     let mut sender = ts3_sender.clone();
                                                     let tx = event_tx_clone.clone();
                                                     let bm_for_move = buffer_manager.clone();
+                                                    let greet_enabled_move = greet_enabled.clone();
+                                                    let greet_cooldowns_move = greet_cooldowns.clone();
+                                                    let greet_msg_tx = ts3_msg_tx.clone();
                                                     tokio::spawn(async move {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
@@ -1410,13 +1464,45 @@ async fn main() -> Result<()> {
                                                             info!("Client moved: {} ({} -> {})", name, old_channel_id, new_channel_id);
                                                             let _ = tx.send(WebSocketEvent::ClientMoved {
                                                                 client_id: client_id_u64,
-                                                                client_name: name,
+                                                                client_name: name.clone(),
                                                                 old_channel_id,
                                                                 new_channel_id,
                                                                 uid,
                                                                 old_channel_name: old_ch_name,
                                                                 new_channel_name: new_ch_name,
                                                             });
+                                                            // Greet user if they joined the bot's channel
+                                                            if !is_self {
+                                                                if let Some(bot_ch) = bot_channel {
+                                                                    if new_channel_id == bot_ch && greet_enabled_move.load(std::sync::atomic::Ordering::Relaxed) {
+                                                                        let now = std::time::Instant::now();
+                                                                        let should_greet = {
+                                                                            let mut cooldowns = greet_cooldowns_move.lock().await;
+                                                                            // Clean old entries (>10min)
+                                                                            cooldowns.retain(|_, t| now.duration_since(*t).as_secs() < 600);
+                                                                            if let Some(last) = cooldowns.get(&client_id_u64) {
+                                                                                now.duration_since(*last).as_secs() >= 600
+                                                                            } else {
+                                                                                true
+                                                                            }
+                                                                        };
+                                                                        if should_greet {
+                                                                            greet_cooldowns_move.lock().await.insert(client_id_u64, now);
+                                                                            let greetings = [
+                                                                                format!("👋 Salut {} !", name),
+                                                                                format!("Hey {} ! 🙌", name),
+                                                                                format!("Yo {} 👊", name),
+                                                                                format!("Bienvenue {} ! 😄", name),
+                                                                                format!("{} est dans la place ! 🎉", name),
+                                                                            ];
+                                                                            let idx = (now.elapsed().subsec_nanos() as usize) % greetings.len();
+                                                                            let greeting = &greetings[idx];
+                                                                            info!("Greeting {} in bot channel", name);
+                                                                            let _ = greet_msg_tx.try_send(OutgoingMessage::channel(greeting.clone()));
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                             // Persist channel ID when the bot itself moves
                                                             if is_self {
                                                                 info!("Saving last channel: {}", new_channel_id);
