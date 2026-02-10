@@ -719,7 +719,7 @@ async fn main() -> Result<()> {
                                                         &reply_target, reply_sender_id
                                                     ));
                                                 } else if msg_lower.starts_with("!status") {
-                                                    // Build status report
+                                                    // Build status report (async to query TS3 state for channel info)
                                                     let bm = buffer_manager.lock().await;
                                                     let active_speakers = bm.get_active_speakers();
                                                     let active_names: Vec<String> = active_speakers.iter().filter_map(|id| {
@@ -751,21 +751,55 @@ async fn main() -> Result<()> {
                                                     };
 
                                                     let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
-                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!(
-                                                        "📊 [b]Status Marlbot[/b]\n\
-                                                         • Uptime : {}\n\
-                                                         • Écoute : {}\n\
-                                                         • Parle : {}\n\
-                                                         • Volume : {}%\n\
-                                                         • TTS : {}\n\
-                                                         • Whisper : {}",
-                                                        uptime_str,
-                                                        listen_str,
-                                                        speak_str,
-                                                        vol,
-                                                        if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
-                                                        if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
-                                                    ), &reply_target, reply_sender_id));
+                                                    let tts_str = if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" };
+                                                    let whisper_str = if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" };
+
+                                                    // Query TS3 state for channel info
+                                                    let mut sender_for_status = ts3_sender.clone();
+                                                    let tx_status = ts3_msg_tx.clone();
+                                                    let rt_status = reply_target;
+                                                    let rs_status = reply_sender_id;
+                                                    tokio::spawn(async move {
+                                                        let channel_info = sender_for_status.with_connection(move |con| {
+                                                            if let Ok(state) = con.get_state() {
+                                                                let bot_client = state.clients.get(&state.own_client);
+                                                                if let Some(bot) = bot_client {
+                                                                    let ch_id = bot.channel.0 as u64;
+                                                                    let ch_name = state.channels.get(&bot.channel)
+                                                                        .map(|c| c.name.clone())
+                                                                        .unwrap_or_else(|| format!("#{}", ch_id));
+                                                                    // Count users in bot's channel
+                                                                    let user_count = state.clients.values()
+                                                                        .filter(|c| c.channel == bot.channel)
+                                                                        .count();
+                                                                    Some((ch_name, user_count))
+                                                                } else { None }
+                                                            } else { None }
+                                                        }).await;
+
+                                                        let channel_str = match channel_info {
+                                                            Ok(Some((name, count))) => format!("{} ({} 👤)", name, count),
+                                                            _ => "Inconnu".to_string(),
+                                                        };
+
+                                                        let _ = tx_status.try_send(OutgoingMessage::reply(format!(
+                                                            "📊 [b]Status Marlbot[/b]\n\
+                                                             • Channel : {}\n\
+                                                             • Uptime : {}\n\
+                                                             • Écoute : {}\n\
+                                                             • Parle : {}\n\
+                                                             • Volume : {}%\n\
+                                                             • TTS : {}\n\
+                                                             • Whisper : {}",
+                                                            channel_str,
+                                                            uptime_str,
+                                                            listen_str,
+                                                            speak_str,
+                                                            vol,
+                                                            tts_str,
+                                                            whisper_str
+                                                        ), &rt_status, rs_status));
+                                                    });
                                                 } else if msg_lower.starts_with("!who") {
                                                     // Show who's in the same channel as the sender
                                                     let sender_id = invoker.id.0 as u64;
