@@ -633,8 +633,18 @@ async fn main() -> Result<()> {
                                                 info!("TS3 Message from {}: {}", invoker.name, message);
 
                                                 // Ignore our own messages to prevent infinite loops
+                                                // Check 1: by client ID (if resolved)
                                                 if let Ok(guard) = own_client_id.read() {
                                                     if *guard == Some(invoker.id.0) {
+                                                        debug!("Ignoring own message (by client ID)");
+                                                        continue;
+                                                    }
+                                                }
+                                                // Check 2: by UID (bot's UID is always the same)
+                                                if let Some(ref uid) = invoker.uid {
+                                                    let uid_b64 = base64::encode(&uid.0);
+                                                    if uid_b64 == "NlViljH4cvfmHfMg6CUT4PGuqEM=" {
+                                                        debug!("Ignoring own message (by UID)");
                                                         continue;
                                                     }
                                                 }
@@ -674,7 +684,7 @@ async fn main() -> Result<()> {
                                                 let msg_lower = message.to_lowercase();
                                                 let reply_target = target;
                                                 let reply_sender_id = invoker.id.0;
-                                                if msg_lower.contains("!help") {
+                                                if msg_lower.starts_with("!help") {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "📋 Commandes disponibles :\n\
                                                          • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
@@ -688,7 +698,7 @@ async fn main() -> Result<()> {
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
                                                     ));
-                                                } else if msg_lower.contains("!status") {
+                                                } else if msg_lower.starts_with("!status") {
                                                     // Build status report
                                                     let bm = buffer_manager.lock().await;
                                                     let active_speakers = bm.get_active_speakers();
@@ -719,7 +729,7 @@ async fn main() -> Result<()> {
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
                                                     ), &reply_target, reply_sender_id));
-                                                } else if msg_lower.contains("!who") {
+                                                } else if msg_lower.starts_with("!who") {
                                                     // Show who's in the same channel as the sender
                                                     let sender_id = invoker.id.0 as u64;
                                                     let mut sender_for_who = ts3_sender.clone();
@@ -836,7 +846,7 @@ async fn main() -> Result<()> {
                                                             }
                                                         });
                                                     }
-                                                } else if msg_lower.contains("!channels") {
+                                                } else if msg_lower.starts_with("!channels") {
                                                     // Show all server channels with user counts
                                                     let mut sender_for_ch = ts3_sender.clone();
                                                     let tx_ch = ts3_msg_tx.clone();
@@ -970,7 +980,7 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
                                                     }
-                                                } else if msg_lower.contains("!stop") {
+                                                } else if msg_lower.starts_with("!stop") {
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name = invoker.name.to_string();
                                                     // Stop TTS playback
@@ -991,7 +1001,7 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🔇 Rien à arrêter.".to_string(), &reply_target, reply_sender_id));
                                                     }
-                                                } else if msg_lower.contains("!listen") || msg_lower.contains("!marlbot") {
+                                                } else if msg_lower.starts_with("!listen") || msg_lower.starts_with("!marlbot") {
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name = invoker.name.to_string();
                                                     info!("🎤 Chat trigger from {} (id: {})", sender_name, sender_id);
