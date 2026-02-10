@@ -441,6 +441,21 @@ async fn main() -> Result<()> {
                                         );
 
                                         if !full_audio.is_empty() {
+                                            // RMS energy gate: skip transcription if audio is mostly silence
+                                            let rms_energy = {
+                                                let sum_sq: f32 = full_audio.iter().map(|s| s * s).sum();
+                                                (sum_sq / full_audio.len() as f32).sqrt()
+                                            };
+
+                                            if rms_energy < 0.005 {
+                                                info!("Skipping transcription for {} — audio too quiet (RMS: {:.4})", speaker_name, rms_energy);
+                                                bm = buffer_manager.lock().await;
+                                                if let Some(buf) = bm.get_buffer_mut(speaker_id) {
+                                                    buf.mark_wake_check();
+                                                }
+                                                break;
+                                            }
+
                                             let tp_clone = tp_arc.clone();
                                             let whisper_tx_clone = whisper_tx.clone();
                                             let api_clone = whisper_api.clone();
@@ -495,8 +510,25 @@ async fn main() -> Result<()> {
                                                     (Err(anyhow::anyhow!("No transcription backend available")), None)
                                                 };
 
+                                                // Filter Whisper hallucinations before forwarding
+                                                fn is_hallucination(text: &str) -> bool {
+                                                    let t = text.trim().to_lowercase();
+                                                    if t.is_empty() { return true; }
+                                                    let patterns = [
+                                                        "[musique]", "[music]", "[applaudissements]", "[rires]",
+                                                        "[silence]", "[bruit]", "[bruits]", "[applause]", "[laughter]",
+                                                        "merci d'avoir regardé", "merci d'avoir écouté",
+                                                        "sous-titres", "sous-titrage", "merci à tous",
+                                                        "à bientôt", "à la prochaine",
+                                                        "thank you for watching", "thanks for watching",
+                                                        "subscribe", "like and subscribe",
+                                                        "...", "you", "bye.",
+                                                    ];
+                                                    patterns.iter().any(|p| t.contains(p))
+                                                }
+
                                                 match text_result {
-                                                    Ok(text) => {
+                                                    Ok(text) if !is_hallucination(&text) => {
                                                         let _ = whisper_tx_clone.blocking_send(WhisperResult::Transcription {
                                                             speaker_id,
                                                             speaker_name,
@@ -506,6 +538,10 @@ async fn main() -> Result<()> {
                                                             audio_len,
                                                             detected_language: detected_lang,
                                                         });
+                                                    }
+                                                    Ok(text) => {
+                                                        info!("Filtered Whisper hallucination: '{}'", text.trim());
+                                                        // Don't forward — send empty so pipeline resets cleanly
                                                     }
                                                     Err(e) => {
                                                         tracing::warn!("Transcription failed: {}", e);
