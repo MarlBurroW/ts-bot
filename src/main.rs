@@ -672,7 +672,7 @@ async fn main() -> Result<()> {
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!who[/b] — qui est dans ton channel ?\n\
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
-                                                         • [b]!tts[/b] <texte> — faire parler le bot (max 500 car.)\n\
+                                                         • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -902,21 +902,55 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!tts ") {
-                                                    let tts_text = message[5..].trim().to_string();
+                                                    // Parse optional voice:XX and speed:XX prefixes
+                                                    let raw_text = message[5..].trim();
+                                                    let valid_voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
+                                                    let mut tts_voice: Option<String> = None;
+                                                    let mut tts_speed: Option<f32> = None;
+                                                    let mut remaining = raw_text;
+                                                    // Extract options from the start of the text
+                                                    loop {
+                                                        let trimmed = remaining.trim_start();
+                                                        if let Some(rest) = trimmed.strip_prefix("voice:") {
+                                                            let end = rest.find(' ').unwrap_or(rest.len());
+                                                            let v = &rest[..end];
+                                                            if valid_voices.contains(&v.to_lowercase().as_str()) {
+                                                                tts_voice = Some(v.to_lowercase());
+                                                                remaining = &rest[end..];
+                                                                continue;
+                                                            }
+                                                        }
+                                                        if let Some(rest) = trimmed.strip_prefix("speed:") {
+                                                            let end = rest.find(' ').unwrap_or(rest.len());
+                                                            if let Ok(s) = rest[..end].parse::<f32>() {
+                                                                if (0.25..=4.0).contains(&s) {
+                                                                    tts_speed = Some(s);
+                                                                    remaining = &rest[end..];
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        }
+                                                        break;
+                                                    }
+                                                    let tts_text = remaining.trim().to_string();
                                                     if tts_text.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Usage: !tts <texte à dire>".to_string(), &reply_target, reply_sender_id));
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            "❌ Usage: !tts [voice:nova] [speed:1.5] <texte>\nVoix: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse".to_string(),
+                                                            &reply_target, reply_sender_id));
                                                     } else if tts_text.len() > 500 {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Texte trop long (max 500 caractères)".to_string(), &reply_target, reply_sender_id));
                                                     } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                                                         let sender_name = invoker.name.to_string();
-                                                        info!("🔊 TTS request from {}: '{}'", sender_name, tts_text);
+                                                        let voice_label = tts_voice.as_deref().unwrap_or("default");
+                                                        let speed_label = tts_speed.map_or("default".to_string(), |s| format!("{:.1}x", s));
+                                                        info!("🔊 TTS request from {} (voice: {}, speed: {}): '{}'", sender_name, voice_label, speed_label, tts_text);
                                                         let player_ref = player.clone();
                                                         let synth_ref = synth.clone();
                                                         let tx_tts = ts3_msg_tx.clone();
                                                         let rt_tts = reply_target.clone();
                                                         let rs_tts = reply_sender_id;
                                                         tokio::spawn(async move {
-                                                            match player_ref.speak(tts_text.clone(), None, None, synth_ref).await {
+                                                            match player_ref.speak(tts_text.clone(), tts_voice, tts_speed, synth_ref).await {
                                                                 Ok(_) => {}
                                                                 Err(e) => {
                                                                     let _ = tx_tts.try_send(OutgoingMessage::reply(format!("❌ TTS error: {}", e), &rt_tts, rs_tts));
