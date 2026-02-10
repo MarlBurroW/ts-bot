@@ -210,6 +210,9 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(50)));
     // Each entry: (timestamp, author, text) — max 50 entries
 
+    // TTS rate limiter: max 5 uses per user per 60 seconds (keyed by client_id)
+    let tts_rate_limits: Arc<Mutex<HashMap<u64, Vec<std::time::Instant>>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -1521,7 +1524,23 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id));
                                                     } else if tts_text.len() > 500 {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Texte trop long (max 500 caractères)".to_string(), &reply_target, reply_sender_id));
-                                                    } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
+                                                    } else {
+                                                        // Rate limit: max 5 TTS per user per 60s
+                                                        let rate_ok = {
+                                                            let mut limits = tts_rate_limits.lock().await;
+                                                            let now = std::time::Instant::now();
+                                                            let entries = limits.entry(invoker.id.0 as u64).or_insert_with(Vec::new);
+                                                            entries.retain(|t| now.duration_since(*t).as_secs() < 60);
+                                                            if entries.len() >= 5 {
+                                                                false
+                                                            } else {
+                                                                entries.push(now);
+                                                                true
+                                                            }
+                                                        };
+                                                        if !rate_ok {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("⏳ Rate limit : max 5 TTS par minute. Attends un peu !".to_string(), &reply_target, reply_sender_id));
+                                                        } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                                                         let sender_name = invoker.name.to_string();
                                                         let voice_label = tts_voice.as_deref().unwrap_or("default");
                                                         let speed_label = tts_speed.map_or("default".to_string(), |s| format!("{:.1}x", s));
@@ -1555,6 +1574,7 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
                                                     }
+                                                    } // close rate limit else block
                                                 } else if msg_lower.starts_with("!replay") {
                                                     let ls = last_spoken_for_ts3.lock().await;
                                                     if let Some((ref text, ref voice, speed)) = *ls {
