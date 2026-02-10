@@ -1,6 +1,4 @@
 pub mod client;
-pub mod events;
-pub mod reconnect;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +9,10 @@ pub enum ConnectionState {
     Disconnected,
     Connecting,
     Connected,
-    Reconnecting,
 }
 
 /// Full connection state tracking
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TS3ConnectionState {
     pub state: ConnectionState,

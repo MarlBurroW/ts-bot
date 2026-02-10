@@ -145,27 +145,4 @@ impl TS3Client {
         Ok(con)
     }
 
-    /// Get current connection state
-    pub async fn get_state(&self) -> TS3ConnectionState {
-        self.state.read().await.clone()
-    }
-
-    /// Update connection state
-    pub async fn set_state(&self, new_state: ConnectionState) {
-        let mut state = self.state.write().await;
-        state.state = new_state;
-    }
-
-    /// Increment reconnection attempts
-    pub async fn increment_reconnect_attempts(&self) -> u32 {
-        let mut state = self.state.write().await;
-        state.reconnect_attempts += 1;
-        state.reconnect_attempts
-    }
-
-    /// Reset reconnection attempts
-    pub async fn reset_reconnect_attempts(&self) {
-        let mut state = self.state.write().await;
-        state.reconnect_attempts = 0;
-    }
 }

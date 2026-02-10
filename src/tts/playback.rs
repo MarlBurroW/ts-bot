@@ -43,7 +43,7 @@ impl AudioPlayer {
     /// - `ts3_sender`: handle to the TS3 connection for sending audio packets
     /// - `event_tx`: broadcast channel to notify WebSocket clients of speak events
     pub fn new(
-        mut ts3_sender: tsclientlib::sync::SyncConnectionHandle,
+        ts3_sender: tsclientlib::sync::SyncConnectionHandle,
         event_tx: tokio::sync::broadcast::Sender<crate::models::WebSocketEvent>,
     ) -> Self {
         Self::with_stop_flag(ts3_sender, event_tx, None)

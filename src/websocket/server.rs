@@ -564,6 +564,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Buffer manager not available".to_string()));
                             }
                         }
+                        CommandAction::DeactivateListener { command_id, client_id } => {
+                            if let Some(ref bm) = state.buffer_manager {
+                                let mut bm = bm.lock().await;
+                                if let Some(buf) = bm.get_buffer_mut(client_id) {
+                                    if buf.is_active {
+                                        buf.deactivate();
+                                        info!("🔇 Deactivated listening for client {} via WS command", client_id);
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Listening deactivated for client {}", client_id))));
+                                    } else {
+                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Client {} was not being listened to", client_id))));
+                                    }
+                                } else {
+                                    let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("No audio buffer for client {}", client_id)));
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "Buffer manager not available".to_string()));
+                            }
+                        }
                         CommandAction::SetChannelDescription { command_id, channel_id, description } => {
                             let mut handle_guard = ts3_handle.lock().await;
                             if let Some(ref mut sender) = *handle_guard {

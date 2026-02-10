@@ -47,6 +47,11 @@ pub enum CommandAction {
         command_id: Option<String>,
         client_id: u64,
     },
+    /// Deactivate listening for a specific client
+    DeactivateListener {
+        command_id: Option<String>,
+        client_id: u64,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -135,6 +140,10 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::ActivateListener { command_id, client_id } => (
             WebSocketEvent::command_success(command_id.clone(), Some("Activating listener...".to_string())),
             CommandAction::ActivateListener { command_id, client_id },
+        ),
+        WebSocketCommand::DeactivateListener { command_id, client_id } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Deactivating listener...".to_string())),
+            CommandAction::DeactivateListener { command_id, client_id },
         ),
     }
 }

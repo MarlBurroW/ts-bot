@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use tracing::{info, warn};
+use tracing::info;
 use std::time::Instant;
 
 /// Transcriber that uses the OpenAI Whisper API instead of local whisper.

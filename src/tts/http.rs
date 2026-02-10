@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use anyhow::{Context, Result};
-use tracing::{info, debug, warn};
+use tracing::{info, debug};
 
 use super::{TtsAudio, TtsSynthesizer};
 
