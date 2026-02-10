@@ -672,6 +672,7 @@ async fn main() -> Result<()> {
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!who[/b] — qui est dans ton channel ?\n\
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
+                                                         • [b]!tts[/b] <texte> — faire parler le bot (max 500 car.)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -899,6 +900,31 @@ async fn main() -> Result<()> {
                                                         } else {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", lang_code), &reply_target, reply_sender_id));
                                                         }
+                                                    }
+                                                } else if msg_lower.starts_with("!tts ") {
+                                                    let tts_text = message[5..].trim().to_string();
+                                                    if tts_text.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Usage: !tts <texte à dire>".to_string(), &reply_target, reply_sender_id));
+                                                    } else if tts_text.len() > 500 {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Texte trop long (max 500 caractères)".to_string(), &reply_target, reply_sender_id));
+                                                    } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
+                                                        let sender_name = invoker.name.to_string();
+                                                        info!("🔊 TTS request from {}: '{}'", sender_name, tts_text);
+                                                        let player_ref = player.clone();
+                                                        let synth_ref = synth.clone();
+                                                        let tx_tts = ts3_msg_tx.clone();
+                                                        let rt_tts = reply_target.clone();
+                                                        let rs_tts = reply_sender_id;
+                                                        tokio::spawn(async move {
+                                                            match player_ref.speak(tts_text.clone(), None, None, synth_ref).await {
+                                                                Ok(_) => {}
+                                                                Err(e) => {
+                                                                    let _ = tx_tts.try_send(OutgoingMessage::reply(format!("❌ TTS error: {}", e), &rt_tts, rs_tts));
+                                                                }
+                                                            }
+                                                        });
+                                                    } else {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
                                                     }
                                                 } else if msg_lower.contains("!stop") {
                                                     let sender_id = invoker.id.0 as u64;
