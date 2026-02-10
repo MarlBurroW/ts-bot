@@ -26,6 +26,28 @@ use tsclientlib::prelude::*;
 use tsclientlib::sync::SyncConnection;
 use ts_bookkeeping::{MessageTarget, DisconnectOptions, Reason};
 
+/// Outgoing TS3 chat message with target (channel or private)
+struct OutgoingMessage {
+    text: String,
+    target: MessageTarget,
+}
+
+impl OutgoingMessage {
+    fn channel(text: String) -> Self {
+        Self { text, target: MessageTarget::Channel }
+    }
+    fn private(text: String, client_id: u16) -> Self {
+        Self { text, target: MessageTarget::Client(tsclientlib::ClientId(client_id)) }
+    }
+    /// Reply to the same context as the incoming message
+    fn reply(text: String, incoming_target: &MessageTarget, sender_id: u16) -> Self {
+        match incoming_target {
+            MessageTarget::Client(_) | MessageTarget::Poke(_) => Self::private(text, sender_id),
+            _ => Self::channel(text),
+        }
+    }
+}
+
 /// Results from background whisper tasks
 enum WhisperResult {
     Transcription {
@@ -231,7 +253,7 @@ async fn main() -> Result<()> {
                 }
 
                 // Channel for queuing outgoing TS3 chat messages
-                let (ts3_msg_tx, mut ts3_msg_rx) = tokio::sync::mpsc::channel::<String>(10);
+                let (ts3_msg_tx, mut ts3_msg_rx) = tokio::sync::mpsc::channel::<OutgoingMessage>(10);
 
                 // Channel for receiving whisper results from background tasks
                 let (whisper_tx, mut whisper_rx) = tokio::sync::mpsc::channel::<WhisperResult>(10);
@@ -243,17 +265,18 @@ async fn main() -> Result<()> {
                 // Spawn task to send TS3 messages via the SyncConnection handle
                 let mut sender_clone = ts3_sender.clone();
                 tokio::spawn(async move {
-                    while let Some(msg) = ts3_msg_rx.recv().await {
-                        let msg_clone = msg.clone();
+                    while let Some(outgoing) = ts3_msg_rx.recv().await {
+                        let text = outgoing.text.clone();
+                        let target = outgoing.target;
                         match sender_clone.with_connection(move |con| {
                             if let Ok(state) = con.get_state() {
                                 let _ = state.send_message(
-                                    MessageTarget::Channel,
-                                    &msg_clone
+                                    target,
+                                    &text
                                 ).send(con);
                             }
                         }).await {
-                            Ok(_) => info!("TS3 chat: {}", msg),
+                            Ok(_) => info!("TS3 chat ({}): {}", match outgoing.target { MessageTarget::Channel => "channel", MessageTarget::Server => "server", _ => "private" }, outgoing.text),
                             Err(e) => warn!("Failed to send TS3 message: {:?}", e),
                         }
                     }
@@ -387,7 +410,7 @@ async fn main() -> Result<()> {
 
                                         // Send transcription to TS3 chat
                                         let _ = ts3_msg_tx.try_send(
-                                            format!("{}: {}", speaker_name, command_text)
+                                            OutgoingMessage::channel(format!("{}: {}", speaker_name, command_text))
                                         );
 
                                         let transcription_event = TranscriptionEvent {
@@ -437,7 +460,7 @@ async fn main() -> Result<()> {
 
                                         // Send "Arrêt de l'écoute" message in TS3 chat
                                         let _ = ts3_msg_tx.try_send(
-                                            format!("Arret de l'ecoute, {}.", speaker_name)
+                                            OutgoingMessage::channel(format!("Arret de l'ecoute, {}.", speaker_name))
                                         );
 
                                         if !full_audio.is_empty() {
@@ -639,8 +662,10 @@ async fn main() -> Result<()> {
 
                                                 // Chat trigger: !listen or !marlbot activates listening for the sender
                                                 let msg_lower = message.to_lowercase();
+                                                let reply_target = target;
+                                                let reply_sender_id = invoker.id.0;
                                                 if msg_lower.contains("!help") {
-                                                    let _ = ts3_msg_tx.try_send(
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "📋 Commandes disponibles :\n\
                                                          • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
@@ -649,8 +674,9 @@ async fn main() -> Result<()> {
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
-                                                         • [b]!help[/b] — afficher cette aide".to_string()
-                                                    );
+                                                         • [b]!help[/b] — afficher cette aide".to_string(),
+                                                        &reply_target, reply_sender_id
+                                                    ));
                                                 } else if msg_lower.contains("!status") {
                                                     // Build status report
                                                     let bm = buffer_manager.lock().await;
@@ -671,7 +697,7 @@ async fn main() -> Result<()> {
                                                     };
                                                     let speak_str = if speaking { "Oui 🔊" } else { "Non" };
 
-                                                    let _ = ts3_msg_tx.try_send(format!(
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!(
                                                         "📊 [b]Status Marlbot[/b]\n\
                                                          • Écoute : {}\n\
                                                          • Parle : {}\n\
@@ -681,12 +707,14 @@ async fn main() -> Result<()> {
                                                         speak_str,
                                                         if config.tts_enabled { "Activé ✅" } else { "Désactivé ❌" },
                                                         if whisper_api.is_some() { "API ✅" } else if transcription_pipeline.is_some() { "Local" } else { "Désactivé ❌" }
-                                                    ));
+                                                    ), &reply_target, reply_sender_id));
                                                 } else if msg_lower.contains("!who") {
                                                     // Show who's in the same channel as the sender
                                                     let sender_id = invoker.id.0 as u64;
                                                     let mut sender_for_who = ts3_sender.clone();
                                                     let tx_who = ts3_msg_tx.clone();
+                                                    let rt_who = reply_target;
+                                                    let rs_who = reply_sender_id;
                                                     tokio::spawn(async move {
                                                         let result = sender_for_who.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
@@ -730,19 +758,21 @@ async fn main() -> Result<()> {
                                                             }
                                                         }).await;
                                                         match result {
-                                                            Ok(Some(msg)) => { let _ = tx_who.try_send(msg); }
-                                                            Ok(None) => { let _ = tx_who.try_send("❌ Erreur interne.".to_string()); }
-                                                            Err(e) => { let _ = tx_who.try_send(format!("❌ Erreur: {}", e)); }
+                                                            Ok(Some(msg)) => { let _ = tx_who.try_send(OutgoingMessage::reply(msg, &rt_who, rs_who)); }
+                                                            Ok(None) => { let _ = tx_who.try_send(OutgoingMessage::reply("❌ Erreur interne.".to_string(), &rt_who, rs_who)); }
+                                                            Err(e) => { let _ = tx_who.try_send(OutgoingMessage::reply(format!("❌ Erreur: {}", e), &rt_who, rs_who)); }
                                                         }
                                                     });
                                                 } else if msg_lower.starts_with("!move") {
                                                     // Move the bot to a channel by name
                                                     let query = message.trim()[5..].trim().to_string();
                                                     if query.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send("❌ Usage: !move <nom du channel>".to_string());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Usage: !move <nom du channel>".to_string(), &reply_target, reply_sender_id));
                                                     } else {
                                                         let mut sender_for_move = ts3_sender.clone();
                                                         let tx_move = ts3_msg_tx.clone();
+                                                        let rt_move = reply_target;
+                                                        let rs_move = reply_sender_id;
                                                         let query_lower = query.to_lowercase();
                                                         tokio::spawn(async move {
                                                             let result = sender_for_move.with_connection(move |con| {
@@ -779,18 +809,18 @@ async fn main() -> Result<()> {
                                                                         Ok(()) => {
                                                                             // Save channel for restore on restart
                                                                             let _ = std::fs::write(".last_channel", channel_id.to_string());
-                                                                            let _ = tx_move.try_send(format!("✅ Déplacé vers [b]{}[/b]", channel_name));
+                                                                            let _ = tx_move.try_send(OutgoingMessage::reply(format!("✅ Déplacé vers [b]{}[/b]", channel_name), &rt_move, rs_move));
                                                                         }
                                                                         Err(e) => {
-                                                                            let _ = tx_move.try_send(format!("❌ Impossible de bouger: {:?}", e));
+                                                                            let _ = tx_move.try_send(OutgoingMessage::reply(format!("❌ Impossible de bouger: {:?}", e), &rt_move, rs_move));
                                                                         }
                                                                     }
                                                                 }
                                                                 Ok(None) => {
-                                                                    let _ = tx_move.try_send(format!("❌ Aucun channel trouvé pour \"{}\"", query));
+                                                                    let _ = tx_move.try_send(OutgoingMessage::reply(format!("❌ Aucun channel trouvé pour \"{}\"", query), &rt_move, rs_move));
                                                                 }
                                                                 Err(e) => {
-                                                                    let _ = tx_move.try_send(format!("❌ Erreur: {}", e));
+                                                                    let _ = tx_move.try_send(OutgoingMessage::reply(format!("❌ Erreur: {}", e), &rt_move, rs_move));
                                                                 }
                                                             }
                                                         });
@@ -799,6 +829,8 @@ async fn main() -> Result<()> {
                                                     // Show all server channels with user counts
                                                     let mut sender_for_ch = ts3_sender.clone();
                                                     let tx_ch = ts3_msg_tx.clone();
+                                                    let rt_ch = reply_target;
+                                                    let rs_ch = reply_sender_id;
                                                     tokio::spawn(async move {
                                                         let result = sender_for_ch.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
@@ -840,9 +872,9 @@ async fn main() -> Result<()> {
                                                             }
                                                         }).await;
                                                         match result {
-                                                            Ok(Some(msg)) => { let _ = tx_ch.try_send(msg); }
-                                                            Ok(None) => { let _ = tx_ch.try_send("❌ Erreur interne.".to_string()); }
-                                                            Err(e) => { let _ = tx_ch.try_send(format!("❌ Erreur: {}", e)); }
+                                                            Ok(Some(msg)) => { let _ = tx_ch.try_send(OutgoingMessage::reply(msg, &rt_ch, rs_ch)); }
+                                                            Ok(None) => { let _ = tx_ch.try_send(OutgoingMessage::reply("❌ Erreur interne.".to_string(), &rt_ch, rs_ch)); }
+                                                            Err(e) => { let _ = tx_ch.try_send(OutgoingMessage::reply(format!("❌ Erreur: {}", e), &rt_ch, rs_ch)); }
                                                         }
                                                     });
                                                 } else if msg_lower.starts_with("!lang") {
@@ -853,7 +885,7 @@ async fn main() -> Result<()> {
                                                         overrides.remove(&sender_uid);
                                                         let _ = save_language_prefs(&overrides);
                                                         drop(overrides);
-                                                        let _ = ts3_msg_tx.try_send("🌍 Langue : auto-détection".to_string());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🌍 Langue : auto-détection".to_string(), &reply_target, reply_sender_id));
                                                     } else {
                                                         let lang_code = parts[1].to_lowercase();
                                                         // Validate: must be 2-letter ISO 639-1
@@ -863,9 +895,9 @@ async fn main() -> Result<()> {
                                                             overrides.insert(sender_uid.clone(), lang_code.clone());
                                                             let _ = save_language_prefs(&overrides);
                                                             drop(overrides);
-                                                            let _ = ts3_msg_tx.try_send(format!("🌍 Langue forcée : [b]{}[/b]", lang_code));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🌍 Langue forcée : [b]{}[/b]", lang_code), &reply_target, reply_sender_id));
                                                         } else {
-                                                            let _ = ts3_msg_tx.try_send(format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", lang_code));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", lang_code), &reply_target, reply_sender_id));
                                                         }
                                                     }
                                                 } else if msg_lower.contains("!stop") {
@@ -885,9 +917,9 @@ async fn main() -> Result<()> {
                                                     drop(bm);
                                                     if was_active {
                                                         info!("🛑 Stop trigger from {} (id: {})", sender_name, sender_id);
-                                                        let _ = ts3_msg_tx.try_send(format!("🛑 OK {}, j'arrête.", sender_name));
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🛑 OK {}, j'arrête.", sender_name), &reply_target, reply_sender_id));
                                                     } else {
-                                                        let _ = ts3_msg_tx.try_send("🔇 Rien à arrêter.".to_string());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🔇 Rien à arrêter.".to_string(), &reply_target, reply_sender_id));
                                                     }
                                                 } else if msg_lower.contains("!listen") || msg_lower.contains("!marlbot") {
                                                     let sender_id = invoker.id.0 as u64;
@@ -905,7 +937,7 @@ async fn main() -> Result<()> {
                                                         buffer.activate();
                                                         buffer.clear();
                                                         drop(bm);
-                                                        let _ = ts3_msg_tx.try_send(format!("🎤 J'écoute, {} !", sender_name));
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🎤 J'écoute, {} !", sender_name), &reply_target, reply_sender_id));
                                                         // Play confirmation audio if available
                                                         if let (Some(ref player), Some(ref cached)) = (&audio_player, &wake_confirmation_frames) {
                                                             let frames = (**cached).clone();
@@ -918,7 +950,7 @@ async fn main() -> Result<()> {
                                                         }
                                                     } else {
                                                         drop(bm);
-                                                        let _ = ts3_msg_tx.try_send(format!("Je t'écoute déjà, {} 😉", sender_name));
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("Je t'écoute déjà, {} 😉", sender_name), &reply_target, reply_sender_id));
                                                     }
                                                 }
                                             }
