@@ -373,6 +373,62 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(list))
     };
 
+    // Bot usage statistics — persisted to data/stats.json
+    #[derive(serde::Serialize, serde::Deserialize, Default)]
+    struct BotStatsData {
+        messages_received: u64,
+        commands_executed: u64,
+        tts_calls: u64,
+        voice_transcriptions: u64,
+        greetings_sent: u64,
+    }
+    struct BotStats {
+        messages_received: std::sync::atomic::AtomicU64,
+        commands_executed: std::sync::atomic::AtomicU64,
+        tts_calls: std::sync::atomic::AtomicU64,
+        voice_transcriptions: std::sync::atomic::AtomicU64,
+        greetings_sent: std::sync::atomic::AtomicU64,
+    }
+    impl BotStats {
+        fn load() -> Self {
+            let data: BotStatsData = std::fs::read_to_string("data/stats.json")
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            if data.messages_received > 0 || data.commands_executed > 0 {
+                info!("Restored stats: {} msgs, {} cmds, {} tts, {} transcriptions, {} greets",
+                    data.messages_received, data.commands_executed, data.tts_calls,
+                    data.voice_transcriptions, data.greetings_sent);
+            }
+            Self {
+                messages_received: std::sync::atomic::AtomicU64::new(data.messages_received),
+                commands_executed: std::sync::atomic::AtomicU64::new(data.commands_executed),
+                tts_calls: std::sync::atomic::AtomicU64::new(data.tts_calls),
+                voice_transcriptions: std::sync::atomic::AtomicU64::new(data.voice_transcriptions),
+                greetings_sent: std::sync::atomic::AtomicU64::new(data.greetings_sent),
+            }
+        }
+        fn save(&self) {
+            let data = BotStatsData {
+                messages_received: self.messages_received.load(std::sync::atomic::Ordering::Relaxed),
+                commands_executed: self.commands_executed.load(std::sync::atomic::Ordering::Relaxed),
+                tts_calls: self.tts_calls.load(std::sync::atomic::Ordering::Relaxed),
+                voice_transcriptions: self.voice_transcriptions.load(std::sync::atomic::Ordering::Relaxed),
+                greetings_sent: self.greetings_sent.load(std::sync::atomic::Ordering::Relaxed),
+            };
+            let _ = std::fs::create_dir_all("data");
+            if let Ok(json) = serde_json::to_string_pretty(&data) {
+                let _ = std::fs::write("data/stats.json", json);
+            }
+        }
+        fn inc_messages(&self) { self.messages_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        fn inc_commands(&self) { self.commands_executed.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        fn inc_tts(&self) { self.tts_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        fn inc_transcriptions(&self) { self.voice_transcriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        fn inc_greetings(&self) { self.greetings_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    }
+    let bot_stats = Arc::new(BotStats::load());
+
     fn parse_duration_str(s: &str) -> Option<u64> {
         // Parse durations like "30m", "2h", "1h30m", "90s", "1d", "1j"
         let s = s.trim().to_lowercase();
@@ -809,9 +865,11 @@ async fn main() -> Result<()> {
                     let last_spoken_ws = last_spoken_for_ws.clone();
                     let tts_muted_clone = tts_muted_for_tts.clone();
                     let tts_chat_history = chat_history.clone();
+                    let bot_stats_tts = bot_stats.clone();
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
+                            bot_stats_tts.inc_tts();
 
                             // Clone all state needed by the sub-task
                             let last_spoken_sub = last_spoken_ws.clone();
@@ -910,6 +968,7 @@ async fn main() -> Result<()> {
 
                                     if !command_text.trim().is_empty() {
                                         info!("Transcription from {} [{}]: '{}'", speaker_name, detected_language.as_deref().unwrap_or("?"), command_text);
+                                        bot_stats.inc_transcriptions();
 
                                         // Record transcription to chat history (persisted)
                                         record_history(&chat_history, format!("🎤{}", speaker_name), command_text.clone()).await;
@@ -1115,6 +1174,8 @@ async fn main() -> Result<()> {
                         _ = buffer_cleanup_interval.tick() => {
                             let mut bm = buffer_manager.lock().await;
                             bm.cleanup_old_buffers(std::time::Duration::from_secs(300));
+                            // Persist stats to disk every 60s
+                            bot_stats.save();
                         }
 
                         // Process TS3 events
@@ -1138,6 +1199,7 @@ async fn main() -> Result<()> {
                                         match event {
                                             Event::Message { target, invoker, message } => {
                                                 info!("TS3 Message from {}: {}", invoker.name, message);
+                                                bot_stats.inc_messages();
 
                                                 // Ignore our own messages to prevent infinite loops
                                                 // Check 1: by client ID (if resolved)
@@ -1230,6 +1292,10 @@ async fn main() -> Result<()> {
                                                     drop(afk_map);
                                                 }
 
+                                                if msg_lower.starts_with("!") {
+                                                    bot_stats.inc_commands();
+                                                }
+
                                                 if msg_lower.starts_with("!help") {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "📋 Commandes disponibles :\n\
@@ -1258,6 +1324,7 @@ async fn main() -> Result<()> {
                                                          • [b]!vote[/b] <n> — voter dans le sondage en cours\n\
                                                          • [b]!remind[/b] <durée> <msg> — rappel (ex: !remind 30m Checker le four)\n\
                                                          • [b]!ping[/b] — latence vers le serveur TS3\n\
+                                                         • [b]!stats[/b] — statistiques d'utilisation (messages, TTS, etc.)\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -2002,6 +2069,34 @@ async fn main() -> Result<()> {
                                                         format!("🏓 Pong ! (uptime: {})", uptime_str),
                                                         &reply_target, reply_sender_id
                                                     ));
+                                                } else if msg_lower == "!stats" {
+                                                    let uptime = start_time.elapsed();
+                                                    let uptime_secs = uptime.as_secs();
+                                                    let uptime_str = if uptime_secs < 3600 {
+                                                        format!("{}m", uptime_secs / 60)
+                                                    } else if uptime_secs < 86400 {
+                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
+                                                    } else {
+                                                        format!("{}j {}h", uptime_secs / 86400, (uptime_secs % 86400) / 3600)
+                                                    };
+                                                    let msgs = bot_stats.messages_received.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let cmds = bot_stats.commands_executed.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let tts = bot_stats.tts_calls.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let transcriptions = bot_stats.voice_transcriptions.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let greets = bot_stats.greetings_sent.load(std::sync::atomic::Ordering::Relaxed);
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                        format!(
+                                                            "📊 Statistiques Marlbot\n\
+                                                             • Uptime session : {}\n\
+                                                             • Messages reçus : {}\n\
+                                                             • Commandes exécutées : {}\n\
+                                                             • Appels TTS : {}\n\
+                                                             • Transcriptions vocales : {}\n\
+                                                             • Salutations envoyées : {}",
+                                                            uptime_str, msgs, cmds, tts, transcriptions, greets
+                                                        ),
+                                                        &reply_target, reply_sender_id
+                                                    ));
                                                 } else if msg_lower.starts_with("!seen") {
                                                     let query = message.get(5..).unwrap_or("").trim();
                                                     let seen = seen_data.lock().await;
@@ -2647,6 +2742,7 @@ async fn main() -> Result<()> {
                                                     let greet_enabled_move = greet_enabled.clone();
                                                     let greet_cooldowns_move = greet_cooldowns.clone();
                                                     let greet_msg_tx = ts3_msg_tx.clone();
+                                                    let bot_stats_greet = bot_stats.clone();
                                                     tokio::spawn(async move {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
@@ -2718,6 +2814,7 @@ async fn main() -> Result<()> {
                                                                             let idx = (now.elapsed().subsec_nanos() as usize) % greetings.len();
                                                                             let greeting = &greetings[idx];
                                                                             info!("Greeting {} in bot channel", name);
+                                                                            bot_stats_greet.inc_greetings();
                                                                             let _ = greet_msg_tx.try_send(OutgoingMessage::channel(greeting.clone()));
                                                                         }
                                                                     }

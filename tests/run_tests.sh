@@ -521,6 +521,17 @@ test_voice_set
 test_seen_command
 test_ping_command
 
+test_stats_command() {
+    sleep 2
+    if sq_send_and_check "!stats" "Statistiques" 5; then
+        log_pass "!stats shows usage statistics"
+    else
+        log_fail "!stats shows usage statistics" "no response"
+    fi
+}
+
+test_stats_command
+
 test_notify_command() {
     sleep 2
     # !notify shows help when no args
