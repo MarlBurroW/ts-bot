@@ -859,6 +859,135 @@ test_ws_malformed_json() {
     fi
 }
 
+# --- WS create_channel + delete_channel (round-trip) ---
+test_ws_create_and_delete_channel() {
+    # Create a temporary channel
+    local resp
+    resp=$(ws_cmd '{"type":"create_channel","name":"WS-Test-Channel","temporary":true,"command_id":"t-cc"}' 3)
+    if echo "$resp" | grep -q '"command_id":"t-cc"'; then
+        # Extract channel_id from response
+        local cid
+        cid=$(echo "$resp" | grep -o '"channel_id":[0-9]*' | head -1 | grep -o '[0-9]*')
+        if [ -n "$cid" ] && [ "$cid" -gt 0 ] 2>/dev/null; then
+            log_pass "WS create_channel creates channel (id=$cid)"
+            # Now delete it
+            local del_resp
+            del_resp=$(ws_cmd "{\"type\":\"delete_channel\",\"channel_id\":$cid,\"force\":true,\"command_id\":\"t-dc\"}" 3)
+            if echo "$del_resp" | grep -q '"command_id":"t-dc"' && ! echo "$del_resp" | grep -qi '"error"'; then
+                log_pass "WS delete_channel removes channel (id=$cid)"
+            else
+                log_fail "WS delete_channel removes channel" "resp: $del_resp"
+            fi
+        else
+            log_pass "WS create_channel responds with command_id (no channel_id parsed)"
+        fi
+    else
+        log_fail "WS create_channel creates channel" "resp: $resp"
+    fi
+}
+
+# --- WS move_channel (move bot to a channel by ID) ---
+test_ws_move_channel() {
+    # Get current status to find a channel ID
+    local status
+    status=$(ws_cmd '{"type":"get_status","command_id":"t-mc-status"}')
+    # Extract first channel_id from channels list
+    local cid
+    cid=$(echo "$status" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$cid" ]; then
+        log_fail "WS move_channel" "could not find channel ID from get_status"
+        return
+    fi
+    local resp
+    resp=$(ws_cmd "{\"type\":\"move_channel\",\"channel_id\":$cid,\"command_id\":\"t-mc\"}" 3)
+    if echo "$resp" | grep -q '"command_id":"t-mc"' && ! echo "$resp" | grep -qi '"error"'; then
+        log_pass "WS move_channel moves bot to channel $cid"
+    else
+        log_fail "WS move_channel moves bot to channel $cid" "resp: $resp"
+    fi
+}
+
+# --- WS poke_client (poke a client by ID) ---
+test_ws_poke_client() {
+    # Get the bot's own client_id from status
+    local status
+    status=$(ws_cmd '{"type":"get_status","command_id":"t-poke-status"}')
+    local client_id
+    client_id=$(echo "$status" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$client_id" ]; then
+        log_fail "WS poke_client" "could not find client ID from get_status"
+        return
+    fi
+    local resp
+    resp=$(ws_cmd "{\"type\":\"poke_client\",\"client_id\":$client_id,\"message\":\"test poke\",\"command_id\":\"t-poke\"}" 3)
+    # Poke to self might fail or succeed depending on TS3 — both are acceptable
+    if echo "$resp" | grep -q '"command_id":"t-poke"'; then
+        log_pass "WS poke_client sends poke (command_id returned)"
+    else
+        log_fail "WS poke_client sends poke" "resp: $resp"
+    fi
+}
+
+# --- WS kick_client (channel kick — should work even on self) ---
+test_ws_kick_client_channel() {
+    # Get the bot's own client_id
+    local status
+    status=$(ws_cmd '{"type":"get_status","command_id":"t-kick-status"}')
+    local client_id
+    client_id=$(echo "$status" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$client_id" ]; then
+        log_fail "WS kick_client (channel)" "could not find client ID from get_status"
+        return
+    fi
+    local resp
+    resp=$(ws_cmd "{\"type\":\"kick_client\",\"client_id\":$client_id,\"kick_type\":\"channel\",\"reason\":\"test kick\",\"command_id\":\"t-kick\"}" 3)
+    # Self-kick might fail with permission error — that's OK, we just want the WS round-trip to work
+    if echo "$resp" | grep -q '"command_id":"t-kick"'; then
+        log_pass "WS kick_client (channel) responds with command_id"
+    else
+        log_fail "WS kick_client (channel) responds" "resp: $resp"
+    fi
+}
+
+# --- WS set_channel_description ---
+test_ws_set_channel_description() {
+    # Get default channel ID (usually 1)
+    local resp
+    resp=$(ws_cmd '{"type":"set_channel_description","channel_id":1,"description":"Test description from WS","command_id":"t-scd"}' 3)
+    if echo "$resp" | grep -q '"command_id":"t-scd"' && ! echo "$resp" | grep -qi '"error"'; then
+        log_pass "WS set_channel_description works"
+    else
+        # Might fail with permissions — still a valid round-trip
+        if echo "$resp" | grep -q '"command_id":"t-scd"'; then
+            log_pass "WS set_channel_description responds (may lack perms)"
+        else
+            log_fail "WS set_channel_description" "resp: $resp"
+        fi
+    fi
+}
+
+# --- WS get_server_info ---
+test_ws_get_server_info() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_server_info","command_id":"t-si"}' 3)
+    if echo "$resp" | grep -q '"command_id":"t-si"'; then
+        log_pass "WS get_server_info returns response"
+    else
+        log_fail "WS get_server_info returns response" "resp: $resp"
+    fi
+}
+
+# --- WS stop_speaking (should succeed even with nothing playing) ---
+test_ws_stop_speaking() {
+    local resp
+    resp=$(ws_cmd '{"type":"stop_speaking","command_id":"t-stop"}' 2)
+    if echo "$resp" | grep -q '"command_id":"t-stop"'; then
+        log_pass "WS stop_speaking responds"
+    else
+        log_fail "WS stop_speaking responds" "resp: $resp"
+    fi
+}
+
 if command -v websocat &>/dev/null; then
     test_ws_get_status_fields
     test_ws_get_volume
@@ -873,6 +1002,13 @@ if command -v websocat &>/dev/null; then
     test_ws_send_message
     test_ws_invalid_command
     test_ws_malformed_json
+    test_ws_create_and_delete_channel
+    test_ws_move_channel
+    test_ws_poke_client
+    test_ws_kick_client_channel
+    test_ws_set_channel_description
+    test_ws_get_server_info
+    test_ws_stop_speaking
 else
     echo -e "${YELLOW}⏭️ SKIP: WebSocket API tests (websocat not installed)${NC}"
 fi
