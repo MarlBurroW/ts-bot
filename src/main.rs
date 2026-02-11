@@ -250,6 +250,9 @@ async fn main() -> Result<()> {
     // When a client connects whose lowercase name contains the key, poke all requesters
     let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Connect time tracking: UID -> Instant when they were first seen (for !who duration display)
+    let connect_times: Arc<Mutex<HashMap<String, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -1091,17 +1094,18 @@ async fn main() -> Result<()> {
                                                         ), &rt_status, rs_status));
                                                     });
                                                 } else if msg_lower.starts_with("!who") {
-                                                    // Show who's in the same channel as the sender
+                                                    // Show who's in the same channel as the sender (with connection duration)
                                                     let sender_id = invoker.id.0 as u64;
                                                     let sender_name_who = invoker.name.to_string();
                                                     let mut sender_for_who = ts3_sender.clone();
                                                     let tx_who = ts3_msg_tx.clone();
                                                     let rt_who = reply_target;
                                                     let rs_who = reply_sender_id;
+                                                    let connect_times_who = connect_times.clone();
                                                     tokio::spawn(async move {
+                                                        // Step 1: Get channel data + client info (name, flags, uid) from TS3 state
                                                         let result = sender_for_who.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
-                                                                // Find sender's channel (try ClientId first, then name fallback)
                                                                 let sender_cid = tsclientlib::ClientId(sender_id as u16);
                                                                 let channel_id = state.clients.get(&sender_cid)
                                                                     .map(|c| c.channel)
@@ -1114,7 +1118,8 @@ async fn main() -> Result<()> {
                                                                     let ch_name = state.channels.get(&ch_id)
                                                                         .map(|c| c.name.clone())
                                                                         .unwrap_or_else(|| format!("Channel #{}", ch_id.0));
-                                                                    let mut lines: Vec<String> = Vec::new();
+                                                                    // Collect client data: (name, flags_str, uid_option)
+                                                                    let mut clients_data: Vec<(String, String, Option<String>)> = Vec::new();
                                                                     for c in state.clients.values() {
                                                                         if c.channel != ch_id { continue; }
                                                                         let mut flags = Vec::new();
@@ -1128,28 +1133,49 @@ async fn main() -> Result<()> {
                                                                         } else {
                                                                             format!(" ({})", flags.join(", "))
                                                                         };
-                                                                        lines.push(format!("• {}{}", c.name, flag_str));
+                                                                        let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                                        clients_data.push((c.name.clone(), flag_str, uid));
                                                                     }
-                                                                    let count = lines.len();
-                                                                    Some(format!(
-                                                                        "👥 [b]{}[/b] — {} personne{}\n{}",
-                                                                        ch_name,
-                                                                        count,
-                                                                        if count > 1 { "s" } else { "" },
-                                                                        lines.join("\n")
-                                                                    ))
+                                                                    Some((ch_name, clients_data))
                                                                 } else {
-                                                                    Some("❌ Impossible de trouver ton channel.".to_string())
+                                                                    None
                                                                 }
                                                             } else {
-                                                                Some("❌ État TS3 indisponible.".to_string())
+                                                                None
                                                             }
                                                         }).await;
-                                                        match result {
-                                                            Ok(Some(msg)) => { let _ = tx_who.try_send(OutgoingMessage::reply(msg, &rt_who, rs_who)); }
-                                                            Ok(None) => { let _ = tx_who.try_send(OutgoingMessage::reply("❌ Erreur interne.".to_string(), &rt_who, rs_who)); }
-                                                            Err(e) => { let _ = tx_who.try_send(OutgoingMessage::reply(format!("❌ Erreur: {}", e), &rt_who, rs_who)); }
-                                                        }
+                                                        // Step 2: Format with connect durations (async lock)
+                                                        let msg = match result {
+                                                            Ok(Some((ch_name, clients_data))) => {
+                                                                let ct = connect_times_who.lock().await;
+                                                                let now = std::time::Instant::now();
+                                                                let mut lines: Vec<String> = Vec::new();
+                                                                for (name, flag_str, uid) in &clients_data {
+                                                                    let duration_str = uid.as_ref()
+                                                                        .and_then(|u| ct.get(u))
+                                                                        .map(|since| {
+                                                                            let secs = now.duration_since(*since).as_secs();
+                                                                            if secs < 60 { format!(" ⏱{}s", secs) }
+                                                                            else if secs < 3600 { format!(" ⏱{}m", secs / 60) }
+                                                                            else if secs < 86400 { format!(" ⏱{}h{}m", secs / 3600, (secs % 3600) / 60) }
+                                                                            else { format!(" ⏱{}j{}h", secs / 86400, (secs % 86400) / 3600) }
+                                                                        })
+                                                                        .unwrap_or_default();
+                                                                    lines.push(format!("• {}{}{}", name, duration_str, flag_str));
+                                                                }
+                                                                let count = lines.len();
+                                                                format!(
+                                                                    "👥 [b]{}[/b] — {} personne{}\n{}",
+                                                                    ch_name,
+                                                                    count,
+                                                                    if count > 1 { "s" } else { "" },
+                                                                    lines.join("\n")
+                                                                )
+                                                            }
+                                                            Ok(None) => "❌ Impossible de trouver ton channel.".to_string(),
+                                                            Err(e) => format!("❌ Erreur: {}", e),
+                                                        };
+                                                        let _ = tx_who.try_send(OutgoingMessage::reply(msg, &rt_who, rs_who));
                                                     });
                                                 } else if msg_lower.starts_with("!move") {
                                                     // Move the bot to a channel by name
@@ -1950,6 +1976,7 @@ async fn main() -> Result<()> {
                                                     let tx = event_tx_clone.clone();
                                                     let notify_watchers_clone = notify_watchers.clone();
                                                     let mut sender_for_poke = ts3_sender.clone();
+                                                    let connect_times_clone = connect_times.clone();
                                                     tokio::spawn(async move {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
@@ -1962,6 +1989,10 @@ async fn main() -> Result<()> {
                                                         }).await;
                                                         if let Ok(Some((name, channel_id, uid, country_code))) = result {
                                                             info!("Client connected: {} (id: {}, uid: {:?})", name, client_id_u64, uid);
+                                                            // Track connect time
+                                                            if let Some(ref uid_str) = uid {
+                                                                connect_times_clone.lock().await.entry(uid_str.clone()).or_insert_with(std::time::Instant::now);
+                                                            }
                                                             let _ = tx.send(WebSocketEvent::ClientConnected {
                                                                 client_id: client_id_u64,
                                                                 client_name: name.clone(),
@@ -2026,6 +2057,10 @@ async fn main() -> Result<()> {
                                                     let uid = client.uid.as_ref().map(|u| base64::encode(&u.0));
                                                     let client_id_u64 = client_id.0 as u64;
                                                     info!("Client disconnected: {} (id: {}, uid: {:?})", client.name, client_id_u64, uid);
+                                                    // Remove connect time tracking
+                                                    if let Some(ref uid_str) = uid {
+                                                        connect_times.lock().await.remove(uid_str);
+                                                    }
                                                     // Record last-seen time
                                                     if let Some(ref uid_str) = uid {
                                                         let mut seen = seen_data.lock().await;
