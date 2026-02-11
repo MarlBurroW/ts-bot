@@ -1348,6 +1348,7 @@ async fn main() -> Result<()> {
                                                          • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
                                                          • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
+                                                         • [b]!8ball[/b] <question> — boule magique 🎱\n\
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
@@ -1992,6 +1993,54 @@ async fn main() -> Result<()> {
                                                         Err(e) => format!("❌ {}", e),
                                                     };
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
+                                                } else if msg_lower.starts_with("!8ball") || msg_lower.starts_with("!8b") || msg_lower.starts_with("!boule") {
+                                                    // Magic 8-ball
+                                                    let question = if msg_lower.starts_with("!8ball") {
+                                                        message.get(6..).unwrap_or("").trim()
+                                                    } else if msg_lower.starts_with("!8b") {
+                                                        message.get(3..).unwrap_or("").trim()
+                                                    } else {
+                                                        message.get(6..).unwrap_or("").trim()
+                                                    };
+                                                    if question.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            "🎱 Pose une question ! (ex: !8ball Est-ce que je vais gagner ?)".to_string(),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                    } else {
+                                                        let answers = [
+                                                            // Positives (8)
+                                                            "🟢 Oui, absolument.",
+                                                            "🟢 C'est certain.",
+                                                            "🟢 Sans aucun doute.",
+                                                            "🟢 Oui, définitivement.",
+                                                            "🟢 Tu peux compter dessus.",
+                                                            "🟢 Les signes disent oui.",
+                                                            "🟢 Très probablement.",
+                                                            "🟢 Les astres sont favorables.",
+                                                            // Neutral (4)
+                                                            "🟡 Réponse floue, repose ta question.",
+                                                            "🟡 Demande plus tard.",
+                                                            "🟡 Mieux vaut ne pas te dire maintenant.",
+                                                            "🟡 Je ne peux pas prédire ça.",
+                                                            // Negatives (8)
+                                                            "🔴 N'y compte pas.",
+                                                            "🔴 Ma réponse est non.",
+                                                            "🔴 Mes sources disent non.",
+                                                            "🔴 Les perspectives ne sont pas bonnes.",
+                                                            "🔴 Très douteux.",
+                                                            "🔴 Non.",
+                                                            "🔴 Clairement pas.",
+                                                            "🔴 Absolument pas.",
+                                                        ];
+                                                        use rand::Rng;
+                                                        let idx = rand::thread_rng().gen_range(0..answers.len());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🎱 {} demande : \"{}\"\n{}", invoker.name, truncate_str(question, 150), answers[idx]),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                        // Count as command for stats
+                                                    }
                                                 } else if msg_lower.starts_with("!quote") {
                                                     // Quote book: save and recall memorable quotes
                                                     let args = message.get(6..).unwrap_or("").trim();

@@ -657,6 +657,26 @@ test_poll_create
 test_poll_show
 test_vote
 test_poll_end
+
+# --- 8ball tests ---
+test_8ball() {
+    if sq_send_and_check '!8ball Will I win?' '🎱' 3; then
+        log_pass '!8ball returns a prediction'
+    else
+        log_fail '!8ball returns a prediction' 'no response'
+    fi
+}
+
+test_8ball_no_question() {
+    if sq_send_and_check '!8ball' 'Pose une question' 3; then
+        log_pass '!8ball without question shows usage'
+    else
+        log_fail '!8ball without question shows usage' 'no response'
+    fi
+}
+
+test_8ball
+test_8ball_no_question
 test_bot_does_not_crash
 
 echo ""
