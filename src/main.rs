@@ -391,6 +391,27 @@ async fn main() -> Result<()> {
                     });
                 }
 
+                // Fix "Marlbot1" clone nickname: after restart, the old connection
+                // takes ~30s to timeout on the TS3 server. During that time, our new
+                // connection gets suffixed with "1". We wait 35s then reset the nickname.
+                {
+                    let mut nick_sender = ts3_sender.clone();
+                    let configured_name = config.ts3_nickname.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(35)).await;
+                        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                        let mut cmd = OutCommand::new(
+                            Direction::C2S, Flags::empty(),
+                            PacketType::Command, "clientupdate",
+                        );
+                        cmd.write_arg("client_nickname", &configured_name);
+                        match nick_sender.send_command(cmd).await {
+                            Ok(()) => info!("Nickname corrected to '{}'", configured_name),
+                            Err(e) => warn!("Nickname correction failed: {:?}", e),
+                        }
+                    });
+                }
+
                 // NOTE: clientupdate unmute removed — was corrupting event stream
 
                 // Channel for queuing outgoing TS3 chat messages
