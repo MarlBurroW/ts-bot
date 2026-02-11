@@ -253,6 +253,18 @@ async fn main() -> Result<()> {
     // Connect time tracking: UID -> Instant when they were first seen (for !who duration display)
     let connect_times: Arc<Mutex<HashMap<String, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // AFK status: UID -> (username, message). Persisted to data/afk.json
+    let afk_status: Arc<Mutex<HashMap<String, (String, String)>>> = {
+        let map = std::fs::read_to_string("data/afk.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, (String, String)>>(&s).ok())
+            .unwrap_or_default();
+        if !map.is_empty() {
+            info!("Restored {} AFK entries from disk", map.len());
+        }
+        Arc::new(Mutex::new(map))
+    };
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -945,6 +957,8 @@ async fn main() -> Result<()> {
                                                     .map(|uid| base64::encode(&uid.0))
                                                     .unwrap_or_else(|| "unknown".to_string());
 
+                                                let sender_name = invoker.name.to_string();
+
                                                 let msg_event = MessageEvent {
                                                     message_type,
                                                     sender_id: invoker.id.0 as u64,
@@ -969,6 +983,38 @@ async fn main() -> Result<()> {
                                                 let msg_lower = message.to_lowercase();
                                                 let reply_target = target;
                                                 let reply_sender_id = invoker.id.0;
+
+                                                // Auto-clear AFK when an AFK user sends any message (except !afk itself)
+                                                if !msg_lower.starts_with("!afk") {
+                                                    let mut afk = afk_status.lock().await;
+                                                    if afk.remove(&sender_uid).is_some() {
+                                                        let _ = std::fs::create_dir_all("data");
+                                                        let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("👋 {} n'est plus AFK", sender_name),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                    }
+                                                    drop(afk);
+                                                }
+
+                                                // AFK mention detection: if non-command message mentions an AFK user, notify
+                                                if !message.starts_with('!') {
+                                                    let msg_lower_afk = message.to_lowercase();
+                                                    let afk_map = afk_status.lock().await;
+                                                    for (afk_uid, (afk_name, afk_msg)) in afk_map.iter() {
+                                                        if afk_uid == &sender_uid { continue; }
+                                                        if msg_lower_afk.contains(&afk_name.to_lowercase()) {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("💤 {} est AFK : {}", afk_name, afk_msg),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                            break;
+                                                        }
+                                                    }
+                                                    drop(afk_map);
+                                                }
+
                                                 if msg_lower.starts_with("!help") {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "📋 Commandes disponibles :\n\
@@ -992,6 +1038,7 @@ async fn main() -> Result<()> {
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
                                                          • [b]!notify[/b] [nom|clear] — être notifié (poke) quand quelqu'un se connecte\n\
+                                                         • [b]!afk[/b] <message> — se marquer AFK (auto-clear quand tu parles)\n\
                                                          • [b]!ping[/b] — latence vers le serveur TS3\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -1826,6 +1873,27 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                     drop(watchers);
+                                                } else if msg_lower.starts_with("!afk") {
+                                                    let arg = message.get(4..).unwrap_or("").trim();
+                                                    let mut afk = afk_status.lock().await;
+                                                    if arg.is_empty() || arg == "off" || arg == "clear" {
+                                                        // Remove AFK status
+                                                        if afk.remove(&sender_uid).is_some() {
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("✅ Tu n'es plus AFK".to_string(), &reply_target, reply_sender_id));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("ℹ️ Tu n'es pas AFK. Usage : [b]!afk <message>[/b]".to_string(), &reply_target, reply_sender_id));
+                                                        }
+                                                    } else {
+                                                        // Set AFK with message (max 200 chars)
+                                                        let afk_msg = truncate_str(arg, 200).to_string();
+                                                        afk.insert(sender_uid.clone(), (sender_name.clone(), afk_msg.clone()));
+                                                        let _ = std::fs::create_dir_all("data");
+                                                        let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("💤 AFK activé : [b]{}[/b] — tape !afk pour revenir", afk_msg), &reply_target, reply_sender_id));
+                                                    }
+                                                    drop(afk);
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {

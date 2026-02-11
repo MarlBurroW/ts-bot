@@ -560,8 +560,29 @@ test_find_empty() {
     fi
 }
 
+test_afk_set() {
+    if sq_send_and_check "!afk eating lunch" "AFK activé"; then
+        log_pass "!afk sets AFK status"
+    else
+        log_fail "!afk sets AFK status" "no response"
+    fi
+}
+
+test_afk_clear() {
+    # Set AFK first, then clear it
+    sq_send_message "!afk brb"
+    sleep 1
+    if sq_send_and_check "!afk" "plus AFK\|Usage"; then
+        log_pass "!afk (no args) clears AFK"
+    else
+        log_fail "!afk (no args) clears AFK" "no response"
+    fi
+}
+
 test_find_command
 test_find_empty
+test_afk_set
+test_afk_clear
 test_bot_does_not_crash
 
 echo ""
