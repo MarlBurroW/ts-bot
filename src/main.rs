@@ -80,7 +80,7 @@ fn truncate_str(s: &str, max_bytes: usize) -> &str {
 }
 
 use anyhow::Result;
-use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent};
+use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, Reminder};
 use ts3_bot::websocket;
 use ts3_bot::websocket::TtsRequest;
 use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, TtsSynthesizer};
@@ -343,38 +343,12 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(map))
     };
 
-    // Active poll: (question, options, votes_per_option: Vec<HashSet<UID>>, creator_name, created_at)
-    // Only one poll active at a time. Persisted to data/poll.json
-    struct ActivePoll {
-        question: String,
-        options: Vec<String>,
-        votes: Vec<std::collections::HashSet<String>>, // UID sets per option
-        creator: String,
-    }
     let active_poll: Arc<Mutex<Option<ActivePoll>>> = Arc::new(Mutex::new(None));
 
 
-    // Active duel: challenger vs target, expires after 30s
-    struct ActiveDuel {
-        challenger_name: String,
-        challenger_uid: String,
-        challenger_clid: u16,
-        target_name: String,
-        target_uid: String,
-        target_clid: u16,
-        created: std::time::Instant,
-    }
     let active_duel: Arc<Mutex<Option<ActiveDuel>>> = Arc::new(Mutex::new(None));
     // Reminders: list of (due_timestamp_ms, creator_uid, creator_name, message)
     // Persisted to data/reminders.json
-    #[derive(Clone, serde::Serialize, serde::Deserialize)]
-    struct Reminder {
-        due_ms: u64,        // Unix timestamp in ms when the reminder fires
-        uid: String,        // Creator UID
-        name: String,       // Creator display name at time of creation
-        message: String,    // Reminder text
-        created_ms: u64,    // When it was created
-    }
     let reminders: Arc<Mutex<Vec<Reminder>>> = {
         let list = std::fs::read_to_string("data/reminders.json")
             .ok()
@@ -387,59 +361,6 @@ async fn main() -> Result<()> {
     };
 
     // Bot usage statistics — persisted to data/stats.json
-    #[derive(serde::Serialize, serde::Deserialize, Default)]
-    struct BotStatsData {
-        messages_received: u64,
-        commands_executed: u64,
-        tts_calls: u64,
-        voice_transcriptions: u64,
-        greetings_sent: u64,
-    }
-    struct BotStats {
-        messages_received: std::sync::atomic::AtomicU64,
-        commands_executed: std::sync::atomic::AtomicU64,
-        tts_calls: std::sync::atomic::AtomicU64,
-        voice_transcriptions: std::sync::atomic::AtomicU64,
-        greetings_sent: std::sync::atomic::AtomicU64,
-    }
-    impl BotStats {
-        fn load() -> Self {
-            let data: BotStatsData = std::fs::read_to_string("data/stats.json")
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-            if data.messages_received > 0 || data.commands_executed > 0 {
-                info!("Restored stats: {} msgs, {} cmds, {} tts, {} transcriptions, {} greets",
-                    data.messages_received, data.commands_executed, data.tts_calls,
-                    data.voice_transcriptions, data.greetings_sent);
-            }
-            Self {
-                messages_received: std::sync::atomic::AtomicU64::new(data.messages_received),
-                commands_executed: std::sync::atomic::AtomicU64::new(data.commands_executed),
-                tts_calls: std::sync::atomic::AtomicU64::new(data.tts_calls),
-                voice_transcriptions: std::sync::atomic::AtomicU64::new(data.voice_transcriptions),
-                greetings_sent: std::sync::atomic::AtomicU64::new(data.greetings_sent),
-            }
-        }
-        fn save(&self) {
-            let data = BotStatsData {
-                messages_received: self.messages_received.load(std::sync::atomic::Ordering::Relaxed),
-                commands_executed: self.commands_executed.load(std::sync::atomic::Ordering::Relaxed),
-                tts_calls: self.tts_calls.load(std::sync::atomic::Ordering::Relaxed),
-                voice_transcriptions: self.voice_transcriptions.load(std::sync::atomic::Ordering::Relaxed),
-                greetings_sent: self.greetings_sent.load(std::sync::atomic::Ordering::Relaxed),
-            };
-            let _ = std::fs::create_dir_all("data");
-            if let Ok(json) = serde_json::to_string_pretty(&data) {
-                let _ = std::fs::write("data/stats.json", json);
-            }
-        }
-        fn inc_messages(&self) { self.messages_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-        fn inc_commands(&self) { self.commands_executed.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-        fn inc_tts(&self) { self.tts_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-        fn inc_transcriptions(&self) { self.voice_transcriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-        fn inc_greetings(&self) { self.greetings_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-    }
     let bot_stats = Arc::new(BotStats::load());
 
     fn parse_duration_str(s: &str) -> Option<u64> {

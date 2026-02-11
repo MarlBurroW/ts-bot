@@ -2,7 +2,7 @@
 *.swp
 *.swo
 .env
-models/
+/models/
 *.bin
 .ts3_identity
 samples/
