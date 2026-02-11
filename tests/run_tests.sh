@@ -611,10 +611,37 @@ test_poll_end() {
     fi
 }
 
+test_remind_set() {
+    if sq_send_and_check "!remind 1h Test reminder" "Rappel dans"; then
+        log_pass "!remind sets a reminder"
+    else
+        log_fail "!remind sets a reminder" "no response"
+    fi
+}
+
+test_remind_list() {
+    if sq_send_and_check "!remind" "rappel"; then
+        log_pass "!remind shows pending reminders"
+    else
+        log_fail "!remind shows pending reminders" "no response"
+    fi
+}
+
+test_remind_clear() {
+    if sq_send_and_check "!remind clear" "supprimé\|Aucun rappel"; then
+        log_pass "!remind clear removes reminders"
+    else
+        log_fail "!remind clear removes reminders" "no response"
+    fi
+}
+
 test_find_command
 test_find_empty
 test_afk_set
 test_afk_clear
+test_remind_set
+test_remind_list
+test_remind_clear
 test_poll_create
 test_poll_show
 test_vote
