@@ -677,6 +677,16 @@ test_8ball_no_question() {
 
 test_8ball
 test_8ball_no_question
+
+# --- Roulette tests ---
+test_roulette() {
+    if sq_send_and_check '!roulette' '🔫' 3; then
+        log_pass '!roulette triggers russian roulette'
+    else
+        log_fail '!roulette triggers russian roulette' 'no response'
+    fi
+}
+test_roulette
 test_bot_does_not_crash
 
 echo ""

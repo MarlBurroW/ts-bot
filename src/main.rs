@@ -1349,6 +1349,7 @@ async fn main() -> Result<()> {
                                                          • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
                                                          • [b]!8ball[/b] <question> — boule magique 🎱\n\
+                                                         • [b]!roulette[/b] — roulette russe 🔫 (1/6 chance de kick)\n\
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
@@ -2040,6 +2041,48 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id
                                                         ));
                                                         // Count as command for stats
+                                                    }
+                                                } else if msg_lower.starts_with("!roulette") {
+                                                    // Russian roulette: 1/6 chance of channel kick
+                                                    use rand::Rng;
+                                                    let chamber = rand::thread_rng().gen_range(1..=6);
+                                                    let name = invoker.name.clone();
+
+                                                    if chamber == 1 {
+                                                        // BANG! — kick from channel
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🔫 {} appuie sur la gâchette...\n💀 BANG ! {} est mort(e) !", name, name),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                        // Kick the user from the channel
+                                                        let mut sender_for_kick = ts3_sender.clone();
+                                                        let kick_clid = reply_sender_id;
+                                                        tokio::spawn(async move {
+                                                            // Small delay so they see the message before getting kicked
+                                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                            use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                            let mut cmd = OutCommand::new(
+                                                                Direction::C2S, Flags::empty(),
+                                                                PacketType::Command, "clientkick",
+                                                            );
+                                                            cmd.write_arg("clid", &kick_clid);
+                                                            cmd.write_arg("reasonid", &4u32); // 4 = kick from channel
+                                                            cmd.write_arg("reasonmsg", &"💀 Roulette russe !");
+                                                            if let Err(e) = sender_for_kick.send_command(cmd).await {
+                                                                warn!("Failed to kick for roulette: {:?}", e);
+                                                            }
+                                                        });
+                                                    } else {
+                                                        let messages = [
+                                                            format!("🔫 {} appuie sur la gâchette...\n😮‍💨 *click* — Pas cette fois ! ({}/6 chances de survie)", name, 6 - 1),
+                                                            format!("🔫 {} tente sa chance...\n😎 Le barillet était vide. Tu vis encore.", name),
+                                                            format!("🔫 *click*\n🍀 {} a de la chance... pour l'instant.", name),
+                                                        ];
+                                                        let idx = rand::thread_rng().gen_range(0..messages.len());
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            messages[idx].clone(),
+                                                            &reply_target, reply_sender_id
+                                                        ));
                                                     }
                                                 } else if msg_lower.starts_with("!quote") {
                                                     // Quote book: save and recall memorable quotes
