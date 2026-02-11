@@ -353,6 +353,18 @@ async fn main() -> Result<()> {
     }
     let active_poll: Arc<Mutex<Option<ActivePoll>>> = Arc::new(Mutex::new(None));
 
+
+    // Active duel: challenger vs target, expires after 30s
+    struct ActiveDuel {
+        challenger_name: String,
+        challenger_uid: String,
+        challenger_clid: u16,
+        target_name: String,
+        target_uid: String,
+        target_clid: u16,
+        created: std::time::Instant,
+    }
+    let active_duel: Arc<Mutex<Option<ActiveDuel>>> = Arc::new(Mutex::new(None));
     // Reminders: list of (due_timestamp_ms, creator_uid, creator_name, message)
     // Persisted to data/reminders.json
     #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1350,6 +1362,7 @@ async fn main() -> Result<()> {
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
                                                          • [b]!8ball[/b] <question> — boule magique 🎱\n\
                                                          • [b]!roulette[/b] — roulette russe 🔫 (1/6 chance de kick)\n\
+                                                         • [b]!duel[/b] <nom> — défier quelqu'un en duel (2d6, perdant = kick)\n\
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
@@ -2084,6 +2097,208 @@ async fn main() -> Result<()> {
                                                             &reply_target, reply_sender_id
                                                         ));
                                                     }
+                                                } else if msg_lower.starts_with("!duel") {
+                                                    // Duel system: challenge someone, dice roll, loser gets channel-kicked
+                                                    let args = message.trim()[5..].trim().to_string();
+                                                    let args_lower = args.to_lowercase();
+                                                    let duel_ref = active_duel.clone();
+
+                                                    if args_lower == "accept" || args_lower == "ok" || args_lower == "oui" {
+                                                        let mut duel_guard = duel_ref.lock().await;
+                                                        if let Some(duel) = duel_guard.as_ref() {
+                                                            if duel.target_uid != sender_uid {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "❌ Ce duel ne te concerne pas !".to_string(),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            } else if duel.created.elapsed().as_secs() > 30 {
+                                                                *duel_guard = None;
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "⏰ Le duel a expiré !".to_string(),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            } else {
+                                                                use rand::Rng;
+                                                                let challenger_name = duel.challenger_name.clone();
+                                                                let target_name = duel.target_name.clone();
+                                                                let challenger_clid = duel.challenger_clid;
+                                                                let target_clid = duel.target_clid;
+                                                                *duel_guard = None;
+                                                                drop(duel_guard);
+
+                                                                let roll1: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
+                                                                let roll2: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
+
+                                                                let (winner, loser, loser_clid) = if roll1 > roll2 {
+                                                                    (&challenger_name, &target_name, target_clid)
+                                                                } else if roll2 > roll1 {
+                                                                    (&target_name, &challenger_name, challenger_clid)
+                                                                } else {
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                        format!("⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🤝 Égalité ! Personne ne meurt... cette fois.", challenger_name, roll1, target_name, roll2),
+                                                                        &reply_target, reply_sender_id
+                                                                    ));
+                                                                    continue;
+                                                                };
+
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    format!("⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🏆 {} gagne ! 💀 {} est éliminé(e) !", challenger_name, roll1, target_name, roll2, winner, loser),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+
+                                                                let mut sender_for_kick = ts3_sender.clone();
+                                                                tokio::spawn(async move {
+                                                                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                                    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                    let mut cmd = OutCommand::new(
+                                                                        Direction::C2S, Flags::empty(),
+                                                                        PacketType::Command, "clientkick",
+                                                                    );
+                                                                    cmd.write_arg("clid", &loser_clid);
+                                                                    cmd.write_arg("reasonid", &4u32);
+                                                                    cmd.write_arg("reasonmsg", &"💀 Perdu au duel !");
+                                                                    if let Err(e) = sender_for_kick.send_command(cmd).await {
+                                                                        warn!("Failed to kick duel loser: {:?}", e);
+                                                                    }
+                                                                });
+                                                            }
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "❌ Aucun duel en attente.".to_string(),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    } else if args_lower == "decline" || args_lower == "non" || args_lower == "refuse" {
+                                                        let mut duel_guard = duel_ref.lock().await;
+                                                        if let Some(duel) = duel_guard.as_ref() {
+                                                            if duel.target_uid == sender_uid {
+                                                                let challenger = duel.challenger_name.clone();
+                                                                let target = duel.target_name.clone();
+                                                                *duel_guard = None;
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    format!("🏳️ {} refuse le duel de {}. Lâche !", target, challenger),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            } else {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "❌ Ce duel ne te concerne pas !".to_string(),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            }
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "❌ Aucun duel en attente.".to_string(),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    } else if args.is_empty() {
+                                                        let duel_guard = duel_ref.lock().await;
+                                                        if let Some(duel) = duel_guard.as_ref() {
+                                                            if duel.created.elapsed().as_secs() <= 30 {
+                                                                let remaining = 30 - duel.created.elapsed().as_secs();
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    format!("⚔️ Duel en attente : {} vs {} ({}s restantes)\n{} doit taper [b]!duel accept[/b] ou [b]!duel non[/b]", duel.challenger_name, duel.target_name, remaining, duel.target_name),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            } else {
+                                                                drop(duel_guard);
+                                                                let mut dg = duel_ref.lock().await;
+                                                                *dg = None;
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "❌ Usage: !duel <nom> — défier quelqu'un en duel (2d6, perdant = kick)".to_string(),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                            }
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "❌ Usage: !duel <nom> — défier quelqu'un en duel (2d6, perdant = kick)".to_string(),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    } else {
+                                                        // Challenge someone: find target by partial name
+                                                        let duel_guard = duel_ref.lock().await;
+                                                        if let Some(duel) = duel_guard.as_ref() {
+                                                            if duel.created.elapsed().as_secs() <= 30 {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    format!("❌ Un duel est déjà en cours : {} vs {} ! Attends qu'il expire.", duel.challenger_name, duel.target_name),
+                                                                    &reply_target, reply_sender_id
+                                                                ));
+                                                                continue;
+                                                            }
+                                                        }
+                                                        drop(duel_guard);
+
+                                                        let mut sender_for_duel = ts3_sender.clone();
+                                                        let tx_duel = ts3_msg_tx.clone();
+                                                        let rt_duel = reply_target;
+                                                        let rs_duel = reply_sender_id;
+                                                        let target_query = args.to_lowercase();
+                                                        let target_query_display = target_query.clone();
+                                                        let challenger_name_duel = invoker.name.clone();
+                                                        let challenger_uid_duel = sender_uid.clone();
+                                                        let challenger_clid_duel = reply_sender_id;
+                                                        let duel_ref2 = active_duel.clone();
+                                                        tokio::spawn(async move {
+                                                            let result = sender_for_duel.with_connection(move |con| {
+                                                                if let Ok(state) = con.get_state() {
+                                                                    let mut matches: Vec<(String, String, u16)> = Vec::new();
+                                                                    for c in state.clients.values() {
+                                                                        if c.name.to_lowercase().contains(&target_query) {
+                                                                            let uid = c.uid.as_ref().map(|u| base64::encode(&u.0)).unwrap_or_default();
+                                                                            matches.push((c.name.clone(), uid, c.id.0));
+                                                                        }
+                                                                    }
+                                                                    Some(matches)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            }).await;
+
+                                                            match result {
+                                                                Ok(Some(matches)) => {
+                                                                    let filtered: Vec<_> = matches.into_iter()
+                                                                        .filter(|(_, uid, _)| uid != &challenger_uid_duel && !uid.is_empty())
+                                                                        .collect();
+                                                                    if filtered.is_empty() {
+                                                                        let _ = tx_duel.try_send(OutgoingMessage::reply(
+                                                                            format!("❌ Aucun adversaire trouvé pour \"{}\"", target_query_display),
+                                                                            &rt_duel, rs_duel
+                                                                        ));
+                                                                    } else if filtered.len() > 1 {
+                                                                        let names: Vec<_> = filtered.iter().map(|(n, _, _)| n.as_str()).collect();
+                                                                        let _ = tx_duel.try_send(OutgoingMessage::reply(
+                                                                            format!("❌ Trop de résultats : {}. Précise le nom.", names.join(", ")),
+                                                                            &rt_duel, rs_duel
+                                                                        ));
+                                                                    } else {
+                                                                        let (target_name, target_uid, target_clid) = &filtered[0];
+                                                                        let mut dg = duel_ref2.lock().await;
+                                                                        *dg = Some(ActiveDuel {
+                                                                            challenger_name: challenger_name_duel.clone(),
+                                                                            challenger_uid: challenger_uid_duel.clone(),
+                                                                            challenger_clid: challenger_clid_duel,
+                                                                            target_name: target_name.clone(),
+                                                                            target_uid: target_uid.clone(),
+                                                                            target_clid: *target_clid,
+                                                                            created: std::time::Instant::now(),
+                                                                        });
+                                                                        let _ = tx_duel.try_send(OutgoingMessage::reply(
+                                                                            format!("⚔️ {} défie {} en duel ! 🎲 2d6, le perdant est kick.\n{} a 30 secondes pour taper [b]!duel accept[/b] ou [b]!duel non[/b]", challenger_name_duel, target_name, target_name),
+                                                                            &rt_duel, rs_duel
+                                                                        ));
+                                                                    }
+                                                                }
+                                                                _ => {
+                                                                    let _ = tx_duel.try_send(OutgoingMessage::reply(
+                                                                        "❌ Impossible de chercher les utilisateurs.".to_string(),
+                                                                        &rt_duel, rs_duel
+                                                                    ));
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+
                                                 } else if msg_lower.starts_with("!quote") {
                                                     // Quote book: save and recall memorable quotes
                                                     let args = message.get(6..).unwrap_or("").trim();

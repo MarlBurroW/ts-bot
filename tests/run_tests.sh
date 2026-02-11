@@ -687,6 +687,26 @@ test_roulette() {
     fi
 }
 test_roulette
+
+# --- Duel tests ---
+test_duel_usage() {
+    if sq_send_and_check '!duel' 'Usage' 3; then
+        log_pass '!duel shows usage'
+    else
+        log_fail '!duel shows usage' 'no response'
+    fi
+}
+
+test_duel_challenge() {
+    if sq_send_and_check '!duel nonexistent_user_xyz' 'adversaire' 3; then
+        log_pass '!duel with unknown user shows error'
+    else
+        log_fail '!duel with unknown user shows error' 'no response'
+    fi
+}
+
+test_duel_usage
+test_duel_challenge
 test_bot_does_not_crash
 
 echo ""
