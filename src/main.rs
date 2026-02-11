@@ -3,6 +3,7 @@ mod ts3;
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, Reminder};
 use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
+use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::websocket;
 use rand::Rng;
 use ts3_bot::websocket::TtsRequest;
@@ -83,6 +84,9 @@ async fn main() -> Result<()> {
 
     info!(?config, "TS3 Bot starting with configuration");
 
+    // Ensure data directory exists (once at startup, not scattered everywhere)
+    ensure_data_dir();
+
     let start_time = std::time::Instant::now();
 
     // Create broadcast channel for TS3 events -> WebSocket clients
@@ -123,38 +127,17 @@ async fn main() -> Result<()> {
 
     // Per-user language overrides for Whisper transcription (UID -> ISO 639-1 code)
     // Persisted to data/language_prefs.json across restarts
-    let language_overrides: Arc<Mutex<HashMap<String, String>>> = {
-        let prefs_path = "data/language_prefs.json";
-        let map = if let Ok(data) = std::fs::read_to_string(prefs_path) {
-            match serde_json::from_str::<HashMap<String, String>>(&data) {
-                Ok(m) => {
-                    info!("Loaded {} language preference(s) from {}", m.len(), prefs_path);
-                    m
-                }
-                Err(e) => {
-                    warn!("Failed to parse {}: {}, starting fresh", prefs_path, e);
-                    HashMap::new()
-                }
-            }
-        } else {
-            HashMap::new()
-        };
-        Arc::new(Mutex::new(map))
-    };
+    let language_overrides: Arc<Mutex<HashMap<String, String>>> =
+        Arc::new(Mutex::new(load_json_logged("data/language_prefs.json", "language preference(s)")));
     let language_overrides_for_ws = Some(language_overrides.clone());
 
-    // Load persisted bot state (mute + volume)
+    // Load persisted bot state (mute + volume + voice)
     let (persisted_muted, persisted_volume, persisted_voice) = {
-        std::fs::read_to_string("data/bot_state.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| {
-                let muted = v.get("muted").and_then(|m| m.as_bool()).unwrap_or(false);
-                let vol = v.get("volume").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
-                let voice = v.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string());
-                (muted, vol, voice)
-            })
-            .unwrap_or((false, 100, None))
+        let v: serde_json::Value = load_json("data/bot_state.json");
+        let muted = v.get("muted").and_then(|m| m.as_bool()).unwrap_or(false);
+        let vol = v.get("volume").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
+        let voice = v.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string());
+        (muted, vol, voice)
     };
     if persisted_muted || persisted_volume != 100 || persisted_voice.is_some() {
         info!("Restored bot state: muted={}, volume={}%, voice={}", persisted_muted, persisted_volume, persisted_voice.as_deref().unwrap_or("config default"));
@@ -183,11 +166,8 @@ async fn main() -> Result<()> {
 
     // Greeting feature: greet users who join the bot's channel
     let greet_enabled = Arc::new(std::sync::atomic::AtomicBool::new({
-        std::fs::read_to_string("data/greet.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
-            .unwrap_or(true) // enabled by default
+        let val: serde_json::Value = load_json("data/greet.json");
+        val.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true)
     }));
     // Cooldown: don't greet the same user within 10 minutes (keyed by client_id)
     let greet_cooldowns: Arc<Mutex<HashMap<u64, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -201,25 +181,14 @@ async fn main() -> Result<()> {
     let tts_rate_limits: Arc<Mutex<HashMap<u64, Vec<std::time::Instant>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Last-seen tracker: UID -> (name, ISO timestamp) — persisted to data/seen.json
-    let seen_data: Arc<Mutex<HashMap<String, (String, String)>>> = {
-        let map = std::fs::read_to_string("data/seen.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<HashMap<String, (String, String)>>(&s).ok())
-            .unwrap_or_default();
-        if !map.is_empty() {
-            info!("Loaded {} seen record(s)", map.len());
-        }
-        Arc::new(Mutex::new(map))
-    };
+    let seen_data: Arc<Mutex<HashMap<String, (String, String)>>> =
+        Arc::new(Mutex::new(load_json_logged("data/seen.json", "seen record(s)")));
 
     // Notify-on-connect watchers: lowercase_target_name -> Vec<(requester_name, requester_uid)>
     // When a client connects whose lowercase name contains the key, poke all requesters
     // Persisted to data/notify.json
     let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = {
-        let map = std::fs::read_to_string("data/notify.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<HashMap<String, Vec<(String, String)>>>(&s).ok())
-            .unwrap_or_default();
+        let map: HashMap<String, Vec<(String, String)>> = load_json("data/notify.json");
         if !map.is_empty() {
             let total: usize = map.values().map(|v| v.len()).sum();
             info!("Restored {} notify watchers ({} targets) from disk", total, map.len());
@@ -231,16 +200,8 @@ async fn main() -> Result<()> {
     let connect_times: Arc<Mutex<HashMap<String, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // AFK status: UID -> (username, message). Persisted to data/afk.json
-    let afk_status: Arc<Mutex<HashMap<String, (String, String)>>> = {
-        let map = std::fs::read_to_string("data/afk.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<HashMap<String, (String, String)>>(&s).ok())
-            .unwrap_or_default();
-        if !map.is_empty() {
-            info!("Restored {} AFK entries from disk", map.len());
-        }
-        Arc::new(Mutex::new(map))
-    };
+    let afk_status: Arc<Mutex<HashMap<String, (String, String)>>> =
+        Arc::new(Mutex::new(load_json_logged("data/afk.json", "AFK entries")));
 
     let active_poll: Arc<Mutex<Option<ActivePoll>>> = Arc::new(Mutex::new(None));
 
@@ -248,16 +209,8 @@ async fn main() -> Result<()> {
     let active_duel: Arc<Mutex<Option<ActiveDuel>>> = Arc::new(Mutex::new(None));
     // Reminders: list of (due_timestamp_ms, creator_uid, creator_name, message)
     // Persisted to data/reminders.json
-    let reminders: Arc<Mutex<Vec<Reminder>>> = {
-        let list = std::fs::read_to_string("data/reminders.json")
-            .ok()
-            .and_then(|s| serde_json::from_str::<Vec<Reminder>>(&s).ok())
-            .unwrap_or_default();
-        if !list.is_empty() {
-            info!("Restored {} reminders from disk", list.len());
-        }
-        Arc::new(Mutex::new(list))
-    };
+    let reminders: Arc<Mutex<Vec<Reminder>>> =
+        Arc::new(Mutex::new(load_json_logged("data/reminders.json", "reminders")));
 
     // Bot usage statistics — persisted to data/stats.json
     let bot_stats = Arc::new(BotStats::load());
@@ -567,7 +520,7 @@ async fn main() -> Result<()> {
 
                             if need_save {
                                 let reminders_lock = reminders_check.lock().await;
-                                let _ = std::fs::write("data/reminders.json", serde_json::to_string(&*reminders_lock).unwrap_or_default());
+                                save_json_compact("data/reminders.json", &*reminders_lock);
                             }
                         }
                     });
@@ -1078,8 +1031,7 @@ async fn main() -> Result<()> {
                                                 if !msg_lower.starts_with("!afk") {
                                                     let mut afk = afk_status.lock().await;
                                                     if afk.remove(&sender_uid).is_some() {
-                                                        let _ = std::fs::create_dir_all("data");
-                                                        let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                        save_json("data/afk.json", &*afk);
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                             format!("👋 {} n'est plus AFK", sender_name),
                                                             &reply_target, reply_sender_id
@@ -1577,10 +1529,9 @@ async fn main() -> Result<()> {
                                                                 player.set_volume(vol);
                                                             }
                                                             // Persist volume
-                                                            let _ = std::fs::create_dir_all("data");
                                                             let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
                                                             let voice_val = default_voice.read().unwrap().clone();
-                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{},"voice":"{}"}}"#, muted_val, vol, voice_val));
+                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol, "voice": voice_val}));
                                                             let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("{} Volume réglé à {}%", emoji, vol),
@@ -1608,10 +1559,9 @@ async fn main() -> Result<()> {
                                                         if valid_voices.contains(&requested.as_str()) {
                                                             *default_voice.write().unwrap() = requested.clone();
                                                             // Persist
-                                                            let _ = std::fs::create_dir_all("data");
                                                             let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
                                                             let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                            let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":{},"volume":{},"voice":"{}"}}"#, muted_val, vol_val, requested));
+                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol_val, "voice": requested}));
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
                                                                 &reply_target, reply_sender_id,
@@ -1626,10 +1576,9 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower == "!mute" {
                                                     tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist mute state
-                                                    let _ = std::fs::create_dir_all("data");
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
                                                     let voice_val = default_voice.read().unwrap().clone();
-                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":true,"volume":{},"voice":"{}"}}"#, vol_val, voice_val));
+                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": true, "volume": vol_val, "voice": voice_val}));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -1637,10 +1586,9 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower == "!unmute" {
                                                     tts_muted.store(false, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist unmute state
-                                                    let _ = std::fs::create_dir_all("data");
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
                                                     let voice_val = default_voice.read().unwrap().clone();
-                                                    let _ = std::fs::write("data/bot_state.json", format!(r#"{{"muted":false,"volume":{},"voice":"{}"}}"#, vol_val, voice_val));
+                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": false, "volume": vol_val, "voice": voice_val}));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -1651,8 +1599,7 @@ async fn main() -> Result<()> {
                                                         match parts[1] {
                                                             "on" => {
                                                                 greet_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                                                                let _ = std::fs::create_dir_all("data");
-                                                                let _ = std::fs::write("data/greet.json", r#"{"enabled":true}"#);
+                                                                save_json_compact("data/greet.json", &serde_json::json!({"enabled": true}));
                                                                 let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                     "👋 Greetings activés — je saluerai les arrivants !".to_string(),
                                                                     &reply_target, reply_sender_id,
@@ -1660,8 +1607,7 @@ async fn main() -> Result<()> {
                                                             }
                                                             "off" => {
                                                                 greet_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-                                                                let _ = std::fs::create_dir_all("data");
-                                                                let _ = std::fs::write("data/greet.json", r#"{"enabled":false}"#);
+                                                                save_json_compact("data/greet.json", &serde_json::json!({"enabled": false}));
                                                                 let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                     "🔕 Greetings désactivés.".to_string(),
                                                                     &reply_target, reply_sender_id,
@@ -2059,10 +2005,7 @@ async fn main() -> Result<()> {
                                                     let quotes_path = "data/quotes.json";
 
                                                     // Load quotes from file
-                                                    let mut quotes: Vec<serde_json::Value> = std::fs::read_to_string(quotes_path)
-                                                        .ok()
-                                                        .and_then(|s| serde_json::from_str(&s).ok())
-                                                        .unwrap_or_default();
+                                                    let mut quotes: Vec<serde_json::Value> = load_json(quotes_path);
 
                                                     let response = if args.starts_with("add ") || args.starts_with("add\t") {
                                                         let quote_text = args[4..].trim();
@@ -2077,8 +2020,7 @@ async fn main() -> Result<()> {
                                                                 "date": chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string(),
                                                             });
                                                             quotes.push(entry);
-                                                            let _ = std::fs::create_dir_all("data");
-                                                            let _ = std::fs::write(quotes_path, serde_json::to_string_pretty(&quotes).unwrap_or_default());
+                                                            save_json(quotes_path, &quotes);
                                                             format!("💬 Quote #{} sauvegardée !", quotes.len())
                                                         }
                                                     } else if args == "list" {
@@ -2102,7 +2044,7 @@ async fn main() -> Result<()> {
                                                         if let Ok(num) = num_str.parse::<usize>() {
                                                             if num >= 1 && num <= quotes.len() {
                                                                 let removed = quotes.remove(num - 1);
-                                                                let _ = std::fs::write(quotes_path, serde_json::to_string_pretty(&quotes).unwrap_or_default());
+                                                                save_json(quotes_path, &quotes);
                                                                 let text = removed.get("text").and_then(|v| v.as_str()).unwrap_or("?");
                                                                 format!("🗑️ Quote #{} supprimée : \"{}\"", num, text)
                                                             } else {
@@ -2234,8 +2176,7 @@ async fn main() -> Result<()> {
                                                             !v.is_empty()
                                                         });
                                                         if removed > 0 {
-                                                            let _ = std::fs::create_dir_all("data");
-                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
+                                                            save_json("data/notify.json", &*watchers);
                                                         }
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                             format!("🔕 {} notification(s) supprimée(s)", removed),
@@ -2254,16 +2195,14 @@ async fn main() -> Result<()> {
                                                                 let _ = entry;
                                                                 watchers.remove(&target_lower);
                                                             }
-                                                            let _ = std::fs::create_dir_all("data");
-                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
+                                                            save_json("data/notify.json", &*watchers);
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🔕 Notification pour \"{}\" désactivée", arg),
                                                                 &reply_target, reply_sender_id
                                                             ));
                                                         } else {
                                                             entry.push((sender_name_str, sender_uid_str));
-                                                            let _ = std::fs::create_dir_all("data");
-                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
+                                                            save_json("data/notify.json", &*watchers);
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🔔 Tu seras notifié quand \"{}\" se connecte ! (!notify {} pour annuler)", arg, arg),
                                                                 &reply_target, reply_sender_id
@@ -2277,8 +2216,7 @@ async fn main() -> Result<()> {
                                                     if arg.is_empty() || arg == "off" || arg == "clear" {
                                                         // Remove AFK status
                                                         if afk.remove(&sender_uid).is_some() {
-                                                            let _ = std::fs::create_dir_all("data");
-                                                            let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                            save_json("data/afk.json", &*afk);
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("✅ Tu n'es plus AFK".to_string(), &reply_target, reply_sender_id));
                                                         } else {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("ℹ️ Tu n'es pas AFK. Usage : [b]!afk <message>[/b]".to_string(), &reply_target, reply_sender_id));
@@ -2287,8 +2225,7 @@ async fn main() -> Result<()> {
                                                         // Set AFK with message (max 200 chars)
                                                         let afk_msg = truncate_str(arg, 200).to_string();
                                                         afk.insert(sender_uid.clone(), (sender_name.clone(), afk_msg.clone()));
-                                                        let _ = std::fs::create_dir_all("data");
-                                                        let _ = std::fs::write("data/afk.json", serde_json::to_string_pretty(&*afk).unwrap_or_default());
+                                                        save_json("data/afk.json", &*afk);
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("💤 AFK activé : [b]{}[/b] — tape !afk pour revenir", afk_msg), &reply_target, reply_sender_id));
                                                     }
                                                     drop(afk);
@@ -2422,7 +2359,7 @@ async fn main() -> Result<()> {
                                                         let before = reminders_lock.len();
                                                         reminders_lock.retain(|r| r.uid != sender_uid);
                                                         let removed = before - reminders_lock.len();
-                                                        let _ = std::fs::write("data/reminders.json", serde_json::to_string(&*reminders_lock).unwrap_or_default());
+                                                        save_json_compact("data/reminders.json", &*reminders_lock);
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                             if removed > 0 { format!("🗑️ {} rappel{} supprimé{}", removed, if removed > 1 { "s" } else { "" }, if removed > 1 { "s" } else { "" }) }
                                                             else { "ℹ️ Aucun rappel à supprimer.".to_string() },
@@ -2468,7 +2405,7 @@ async fn main() -> Result<()> {
                                                                     ));
                                                                 } else {
                                                                     reminders_lock.push(reminder);
-                                                                    let _ = std::fs::write("data/reminders.json", serde_json::to_string(&*reminders_lock).unwrap_or_default());
+                                                                    save_json_compact("data/reminders.json", &*reminders_lock);
                                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                         format!("✅ Rappel dans [b]{}[/b] : {}", format_duration_ms(dur_ms), msg_text),
                                                                         &reply_target, reply_sender_id
@@ -2782,8 +2719,7 @@ async fn main() -> Result<()> {
                                                     if let Some(ref uid_str) = uid {
                                                         let mut seen = seen_data.lock().await;
                                                         seen.insert(uid_str.clone(), (client.name.clone(), chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string()));
-                                                        let _ = std::fs::create_dir_all("data");
-                                                        let _ = std::fs::write("data/seen.json", serde_json::to_string_pretty(&*seen).unwrap_or_default());
+                                                        save_json("data/seen.json", &*seen);
                                                         drop(seen);
                                                     }
                                                     // Deactivate listening if this user was being listened to

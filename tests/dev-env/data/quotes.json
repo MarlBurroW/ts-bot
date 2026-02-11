@@ -258,5 +258,15 @@
     "author": "serveradmin",
     "date": "2026-02-11 13:05",
     "text": "Test quote from integration test"
+  },
+  {
+    "author": "serveradmin",
+    "date": "2026-02-11 14:05",
+    "text": "Test quote from integration test"
+  },
+  {
+    "author": "serveradmin",
+    "date": "2026-02-11 14:07",
+    "text": "Test quote from integration test"
   }
 ]

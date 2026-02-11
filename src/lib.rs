@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod models;
+pub mod persistence;
 pub mod tts;
 pub mod utils;
 pub mod websocket;
