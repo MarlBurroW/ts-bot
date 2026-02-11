@@ -976,6 +976,7 @@ async fn main() -> Result<()> {
                                                          • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
                                                          • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
                                                          • [b]!who[/b] — qui est dans ton channel ?\n\
+                                                         • [b]!find[/b] <nom> — trouver un utilisateur sur le serveur\n\
                                                          • [b]!channels[/b] — lister tous les channels du serveur\n\
                                                          • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
                                                          • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
@@ -1177,6 +1178,66 @@ async fn main() -> Result<()> {
                                                         };
                                                         let _ = tx_who.try_send(OutgoingMessage::reply(msg, &rt_who, rs_who));
                                                     });
+                                                } else if msg_lower.starts_with("!find") {
+                                                    // Find a user on the server by partial name
+                                                    let query = message.trim()[5..].trim().to_string();
+                                                    if query.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Usage: !find <nom>".to_string(), &reply_target, reply_sender_id));
+                                                    } else {
+                                                        let mut sender_for_find = ts3_sender.clone();
+                                                        let tx_find = ts3_msg_tx.clone();
+                                                        let rt_find = reply_target;
+                                                        let rs_find = reply_sender_id;
+                                                        let query_lower = query.to_lowercase();
+                                                        let connect_times_find = connect_times.clone();
+                                                        tokio::spawn(async move {
+                                                            let result = sender_for_find.with_connection(move |con| {
+                                                                if let Ok(state) = con.get_state() {
+                                                                    let mut matches: Vec<(String, String, Option<String>)> = Vec::new(); // (name, channel_name, uid)
+                                                                    for c in state.clients.values() {
+                                                                        if c.name.to_lowercase().contains(&query_lower) {
+                                                                            let ch_name = state.channels.get(&c.channel)
+                                                                                .map(|ch| ch.name.clone())
+                                                                                .unwrap_or_else(|| format!("Channel #{}", c.channel.0));
+                                                                            let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                                            matches.push((c.name.clone(), ch_name, uid));
+                                                                        }
+                                                                    }
+                                                                    Some(matches)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            }).await;
+
+                                                            let msg = match result {
+                                                                Ok(Some(matches)) if matches.is_empty() => {
+                                                                    format!("❌ Aucun utilisateur trouvé pour \"{}\"", query)
+                                                                }
+                                                                Ok(Some(matches)) => {
+                                                                    let ct = connect_times_find.lock().await;
+                                                                    let now = std::time::Instant::now();
+                                                                    let mut lines: Vec<String> = Vec::new();
+                                                                    for (name, ch_name, uid) in &matches {
+                                                                        let duration_str = uid.as_ref()
+                                                                            .and_then(|u| ct.get(u))
+                                                                            .map(|since| {
+                                                                                let secs = now.duration_since(*since).as_secs();
+                                                                                if secs < 60 { format!(" ⏱{}s", secs) }
+                                                                                else if secs < 3600 { format!(" ⏱{}m", secs / 60) }
+                                                                                else if secs < 86400 { format!(" ⏱{}h{}m", secs / 3600, (secs % 3600) / 60) }
+                                                                                else { format!(" ⏱{}j{}h", secs / 86400, (secs % 86400) / 3600) }
+                                                                            })
+                                                                            .unwrap_or_default();
+                                                                        lines.push(format!("• [b]{}[/b] → {} {}", name, ch_name, duration_str));
+                                                                    }
+                                                                    format!("🔍 {} résultat{} pour \"{}\" :\n{}", matches.len(), if matches.len() > 1 { "s" } else { "" }, query, lines.join("\n"))
+                                                                }
+                                                                Ok(None) => "❌ État du serveur indisponible".to_string(),
+                                                                Err(e) => format!("❌ Erreur: {}", e),
+                                                            };
+                                                            let _ = tx_find.try_send(OutgoingMessage::reply(msg, &rt_find, rs_find));
+                                                        });
+                                                    }
                                                 } else if msg_lower.starts_with("!move") {
                                                     // Move the bot to a channel by name
                                                     let query = message.trim()[5..].trim().to_string();

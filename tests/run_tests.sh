@@ -37,7 +37,7 @@ log_fail() { echo -e "${RED}❌ FAIL${NC}: $1 — $2"; ((TESTS_FAILED++)); }
 # ─── ServerQuery helpers ───
 
 sq_cmd() {
-    echo -e "login $SQ_USER $SQ_PASS\nuse 1\n$1\nquit" | nc -q2 "$SQ_HOST" "$SQ_PORT" 2>/dev/null
+    echo -e "login $SQ_USER $SQ_PASS\nuse 1\n$1\nquit" | nc -w3 "$SQ_HOST" "$SQ_PORT" 2>/dev/null
 }
 
 # Send channel message and return bot's response from logs
@@ -540,6 +540,25 @@ test_notify_add() {
 
 test_notify_command
 test_notify_add
+
+test_find_command() {
+    if sq_send_and_check "!find serveradmin" "résultat"; then
+        log_pass "!find returns search results"
+    else
+        log_fail "!find returns search results" "no response"
+    fi
+}
+
+test_find_empty() {
+    if sq_send_and_check "!find zzzznonexistent" "Aucun utilisateur"; then
+        log_pass "!find with no match shows error"
+    else
+        log_fail "!find with no match shows error" "no response"
+    fi
+}
+
+test_find_command
+test_find_empty
 test_bot_does_not_crash
 
 echo ""
