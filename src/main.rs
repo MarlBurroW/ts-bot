@@ -392,22 +392,42 @@ async fn main() -> Result<()> {
                 }
 
                 // Fix "Marlbot1" clone nickname: after restart, the old connection
-                // takes ~30s to timeout on the TS3 server. During that time, our new
-                // connection gets suffixed with "1". We wait 35s then reset the nickname.
+                // takes ~30-60s to timeout on the TS3 server. During that time, our new
+                // connection gets suffixed with "1". We retry until we can claim our name.
                 {
                     let mut nick_sender = ts3_sender.clone();
                     let configured_name = config.ts3_nickname.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(35)).await;
                         use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                        let mut cmd = OutCommand::new(
-                            Direction::C2S, Flags::empty(),
-                            PacketType::Command, "clientupdate",
-                        );
-                        cmd.write_arg("client_nickname", &configured_name);
-                        match nick_sender.send_command(cmd).await {
-                            Ok(()) => info!("Nickname corrected to '{}'", configured_name),
-                            Err(e) => warn!("Nickname correction failed: {:?}", e),
+                        // Start trying after 30s, retry every 10s up to 2 minutes
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        for attempt in 1..=6 {
+                            let mut cmd = OutCommand::new(
+                                Direction::C2S, Flags::empty(),
+                                PacketType::Command, "clientupdate",
+                            );
+                            cmd.write_arg("client_nickname", &configured_name);
+                            match nick_sender.send_command(cmd).await {
+                                Ok(()) => {
+                                    info!("Nickname corrected to '{}' (attempt {})", configured_name, attempt);
+                                    return;
+                                }
+                                Err(e) => {
+                                    let err_str = format!("{:?}", e);
+                                    // ClientNicknameInuse when setting our own name = already correct
+                                    // (TS3 auto-renames us when the old clone disconnects)
+                                    if err_str.contains("ClientNicknameInuse") {
+                                        info!("Nickname already '{}' — no correction needed", configured_name);
+                                        return;
+                                    }
+                                    if attempt < 6 {
+                                        debug!("Nickname correction attempt {} failed: {:?}, retrying in 10s", attempt, e);
+                                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                    } else {
+                                        warn!("Nickname correction failed after {} attempts: {:?}", attempt, e);
+                                    }
+                                }
+                            }
                         }
                     });
                 }
