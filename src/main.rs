@@ -314,7 +314,18 @@ async fn main() -> Result<()> {
 
     // Notify-on-connect watchers: lowercase_target_name -> Vec<(requester_name, requester_uid)>
     // When a client connects whose lowercase name contains the key, poke all requesters
-    let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Persisted to data/notify.json
+    let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = {
+        let map = std::fs::read_to_string("data/notify.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, Vec<(String, String)>>>(&s).ok())
+            .unwrap_or_default();
+        if !map.is_empty() {
+            let total: usize = map.values().map(|v| v.len()).sum();
+            info!("Restored {} notify watchers ({} targets) from disk", total, map.len());
+        }
+        Arc::new(Mutex::new(map))
+    };
 
     // Connect time tracking: UID -> Instant when they were first seen (for !who duration display)
     let connect_times: Arc<Mutex<HashMap<String, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -2050,6 +2061,10 @@ async fn main() -> Result<()> {
                                                             removed += before - v.len();
                                                             !v.is_empty()
                                                         });
+                                                        if removed > 0 {
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
+                                                        }
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                             format!("🔕 {} notification(s) supprimée(s)", removed),
                                                             &reply_target, reply_sender_id
@@ -2067,12 +2082,16 @@ async fn main() -> Result<()> {
                                                                 let _ = entry;
                                                                 watchers.remove(&target_lower);
                                                             }
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🔕 Notification pour \"{}\" désactivée", arg),
                                                                 &reply_target, reply_sender_id
                                                             ));
                                                         } else {
                                                             entry.push((sender_name_str, sender_uid_str));
+                                                            let _ = std::fs::create_dir_all("data");
+                                                            let _ = std::fs::write("data/notify.json", serde_json::to_string_pretty(&*watchers).unwrap_or_default());
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🔔 Tu seras notifié quand \"{}\" se connecte ! (!notify {} pour annuler)", arg, arg),
                                                                 &reply_target, reply_sender_id
