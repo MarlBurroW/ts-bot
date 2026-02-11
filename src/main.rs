@@ -264,9 +264,31 @@ async fn main() -> Result<()> {
             }
         };
 
-        // Attempt initial connection
-        match ts3_client.connect().await {
-            Ok(connection) => {
+        // Attempt connection with retry loop (uses reconnect_* config)
+        let max_attempts = config.reconnect_max_attempts;
+        let initial_delay_ms = config.reconnect_initial_delay_ms;
+        let max_delay_ms = config.reconnect_max_delay_ms;
+
+        let mut connection_opt = None;
+        for attempt in 1..=max_attempts {
+            match ts3_client.connect().await {
+                Ok(c) => {
+                    connection_opt = Some(c);
+                    break;
+                }
+                Err(e) => {
+                    if attempt == max_attempts {
+                        error!("Failed to connect to TS3 server after {} attempts: {}", max_attempts, e);
+                    } else {
+                        let delay_ms = (initial_delay_ms * 2u64.saturating_pow(attempt - 1)).min(max_delay_ms);
+                        warn!("TS3 connection attempt {}/{} failed: {}. Retrying in {}ms...", attempt, max_attempts, e, delay_ms);
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
+        }
+
+        if let Some(connection) = connection_opt {
                 info!("TS3 client connected successfully");
 
                 // Convert to SyncConnection for bidirectional communication
@@ -1977,11 +1999,7 @@ async fn main() -> Result<()> {
                 } // close loop
 
                 info!("Event loop ended");
-            }
-            Err(e) => {
-                error!("Failed to connect to TS3 server: {}", e);
-            }
-        }
+        } // close if let Some(connection)
     });
 
     // Spawn WebSocket server task (with TTS channel if enabled)
