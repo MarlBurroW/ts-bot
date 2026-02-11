@@ -1,5 +1,72 @@
 mod ts3;
 
+/// Record a chat history entry: push to ring buffer + append to JSONL file
+async fn record_history(
+    history: &tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>,
+    author: String,
+    text: String,
+) {
+    let ts = chrono::Utc::now().format("%H:%M").to_string();
+    let full_ts = chrono::Utc::now().to_rfc3339();
+    {
+        let mut hist = history.lock().await;
+        hist.push_back((ts.clone(), author.clone(), text.clone()));
+        if hist.len() > 200 { hist.pop_front(); }
+    }
+    // Append to JSONL file (best-effort, don't block on errors)
+    let line = serde_json::json!({
+        "t": full_ts,
+        "a": author,
+        "m": text,
+    });
+    if let Ok(mut f) = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("data/chat_history.jsonl")
+        .await
+    {
+        use tokio::io::AsyncWriteExt;
+        let _ = f.write_all(format!("{}\n", line).as_bytes()).await;
+    }
+}
+
+/// Load chat history from JSONL file (last 200 entries), trim file if >500 lines
+fn load_chat_history() -> std::collections::VecDeque<(String, String, String)> {
+    let mut history = std::collections::VecDeque::with_capacity(200);
+    let path = "data/chat_history.jsonl";
+    if let Ok(content) = std::fs::read_to_string(path) {
+        let lines: Vec<&str> = content.lines().collect();
+        // Trim file if over 500 lines (keep last 300)
+        if lines.len() > 500 {
+            let trimmed: Vec<&str> = lines[lines.len() - 300..].to_vec();
+            let _ = std::fs::write(path, trimmed.join("\n") + "\n");
+            tracing::info!("Trimmed chat_history.jsonl from {} to 300 lines", lines.len());
+        }
+        // Load last 200 into memory
+        let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
+        for line in &lines[start..] {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let full_ts = v.get("t").and_then(|t| t.as_str()).unwrap_or("");
+                // Extract HH:MM from ISO timestamp
+                let ts = if full_ts.len() >= 16 {
+                    full_ts[11..16].to_string()
+                } else {
+                    full_ts.to_string()
+                };
+                let author = v.get("a").and_then(|a| a.as_str()).unwrap_or("").to_string();
+                let text = v.get("m").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                if !author.is_empty() {
+                    history.push_back((ts, author, text));
+                }
+            }
+        }
+        if !history.is_empty() {
+            tracing::info!("Loaded {} chat history entries from disk", history.len());
+        }
+    }
+    history
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8 char.
 fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -225,10 +292,9 @@ async fn main() -> Result<()> {
     // Cooldown: don't greet the same user within 10 minutes (keyed by client_id)
     let greet_cooldowns: Arc<Mutex<HashMap<u64, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Chat history ring buffer (last N messages for !history)
+    // Chat history ring buffer (last 200 messages for !history) — persisted to data/chat_history.jsonl
     let chat_history: Arc<Mutex<std::collections::VecDeque<(String, String, String)>>> =
-        Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(50)));
-    // Each entry: (timestamp, author, text) — max 50 entries
+        Arc::new(Mutex::new(load_chat_history()));
     let chat_history_for_ws = Some(chat_history.clone());
 
     // TTS rate limiter: max 5 uses per user per 60 seconds (keyed by client_id)
@@ -615,17 +681,14 @@ async fn main() -> Result<()> {
                                 };
                                 let _ = tts_chat_tx_sub.try_send(OutgoingMessage::channel(display_text));
 
-                                // Record bot response to chat history
+                                // Record bot response to chat history (persisted)
                                 {
-                                    let mut hist = tts_chat_history_sub.lock().await;
-                                    let ts = chrono::Utc::now().format("%H:%M").to_string();
                                     let truncated = if request.text.len() > 200 {
                                         format!("{}...", truncate_str(&request.text, 200))
                                     } else {
                                         request.text.clone()
                                     };
-                                    hist.push_back((ts, "🤖 Marlbot".to_string(), truncated));
-                                    if hist.len() > 50 { hist.pop_front(); }
+                                    record_history(&tts_chat_history_sub, "🤖 Marlbot".to_string(), truncated).await;
                                 }
 
                                 // If TTS is muted, skip speech but still emit events
@@ -688,13 +751,8 @@ async fn main() -> Result<()> {
                                     if !command_text.trim().is_empty() {
                                         info!("Transcription from {} [{}]: '{}'", speaker_name, detected_language.as_deref().unwrap_or("?"), command_text);
 
-                                        // Record transcription to chat history
-                                        {
-                                            let mut hist = chat_history.lock().await;
-                                            let ts = chrono::Utc::now().format("%H:%M").to_string();
-                                            hist.push_back((ts, format!("🎤{}", speaker_name), command_text.clone()));
-                                            if hist.len() > 50 { hist.pop_front(); }
-                                        }
+                                        // Record transcription to chat history (persisted)
+                                        record_history(&chat_history, format!("🎤{}", speaker_name), command_text.clone()).await;
 
                                         // Send transcription to TS3 chat
                                         let _ = ts3_msg_tx.try_send(
@@ -940,10 +998,7 @@ async fn main() -> Result<()> {
 
                                                 // Record to chat history (skip bot commands)
                                                 if !message.starts_with('!') {
-                                                    let mut hist = chat_history.lock().await;
-                                                    let ts = chrono::Utc::now().format("%H:%M").to_string();
-                                                    hist.push_back((ts, invoker.name.to_string(), message.to_string()));
-                                                    if hist.len() > 50 { hist.pop_front(); }
+                                                    record_history(&chat_history, invoker.name.to_string(), message.to_string()).await;
                                                 }
 
                                                 let (message_type, channel_id) = match target {
@@ -1751,7 +1806,7 @@ async fn main() -> Result<()> {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!history") {
                                                     let args = message.get(8..).unwrap_or("").trim();
-                                                    let count: usize = args.parse().unwrap_or(10).min(50).max(1);
+                                                    let count: usize = args.parse().unwrap_or(20).min(50).max(1);
                                                     let hist = chat_history.lock().await;
                                                     if hist.is_empty() {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("📜 Aucun historique.".to_string(), &reply_target, reply_sender_id));
