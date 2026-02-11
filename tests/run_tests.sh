@@ -101,6 +101,9 @@ setup() {
         echo "ERROR: Cannot connect to ServerQuery on port $SQ_PORT"
         exit 2
     fi
+
+    # Relax ServerQuery flood protection for tests (reset on docker restart)
+    sq_cmd "instanceedit serverinstance_serverquery_flood_commands=100 serverinstance_serverquery_flood_time=1 serverinstance_serverquery_max_connections_per_ip=50" >/dev/null 2>&1
     
     # Kill any leftover test bot and wait for TS3 to release the connection
     if pgrep -f "MarlbotTest" >/dev/null 2>&1; then
