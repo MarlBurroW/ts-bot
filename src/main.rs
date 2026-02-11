@@ -983,6 +983,7 @@ async fn main() -> Result<()> {
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
+                                                         • [b]!ping[/b] — latence vers le serveur TS3\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -1629,6 +1630,21 @@ async fn main() -> Result<()> {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
                                                     }
                                                     drop(hist);
+                                                } else if msg_lower == "!ping" {
+                                                    // Respond with pong + uptime info (no TS3 command needed)
+                                                    let uptime = start_time.elapsed();
+                                                    let uptime_secs = uptime.as_secs();
+                                                    let uptime_str = if uptime_secs < 60 {
+                                                        format!("{}s", uptime_secs)
+                                                    } else if uptime_secs < 3600 {
+                                                        format!("{}m {}s", uptime_secs / 60, uptime_secs % 60)
+                                                    } else {
+                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
+                                                    };
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                        format!("🏓 Pong ! (uptime: {})", uptime_str),
+                                                        &reply_target, reply_sender_id
+                                                    ));
                                                 } else if msg_lower.starts_with("!seen") {
                                                     let query = message.get(5..).unwrap_or("").trim();
                                                     let seen = seen_data.lock().await;

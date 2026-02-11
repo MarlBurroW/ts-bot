@@ -463,6 +463,17 @@ test_seen_command() {
     fi
 }
 
+test_ping_command() {
+    # Extra delay to avoid TS3 flood protection
+    sleep 2
+    # !ping should return Pong with ms latency
+    if sq_send_and_check "!ping" "Pong" 5; then
+        log_pass "!ping returns pong with latency"
+    else
+        log_fail "!ping returns pong with latency" "no pong response"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -505,6 +516,7 @@ test_history_command
 test_voice_command
 test_voice_set
 test_seen_command
+test_ping_command
 test_bot_does_not_crash
 
 echo ""
