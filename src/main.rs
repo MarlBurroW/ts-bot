@@ -1880,95 +1880,18 @@ async fn main() -> Result<()> {
                                                     }
 
                                                 } else if msg_lower.starts_with("!quote") {
-                                                    // Quote book: save and recall memorable quotes
                                                     let args = message.get(6..).unwrap_or("").trim();
-                                                    let quotes_path = "data/quotes.json";
-
-                                                    // Load quotes from file
-                                                    let mut quotes: Vec<serde_json::Value> = load_json(quotes_path);
-
-                                                    let response = if args.starts_with("add ") || args.starts_with("add\t") {
-                                                        let quote_text = args[4..].trim();
-                                                        if quote_text.is_empty() {
-                                                            "❌ Usage: !quote add <texte>".to_string()
-                                                        } else if quote_text.len() > 500 {
-                                                            "❌ Quote trop longue (max 500 caractères)".to_string()
-                                                        } else {
-                                                            let entry = serde_json::json!({
-                                                                "text": quote_text,
-                                                                "author": invoker.name.to_string(),
-                                                                "date": chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string(),
-                                                            });
-                                                            quotes.push(entry);
-                                                            save_json(quotes_path, &quotes);
-                                                            format!("💬 Quote #{} sauvegardée !", quotes.len())
-                                                        }
-                                                    } else if args == "list" {
-                                                        if quotes.is_empty() {
-                                                            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
-                                                        } else {
-                                                            let start = if quotes.len() > 5 { quotes.len() - 5 } else { 0 };
-                                                            let mut lines = vec![format!("📖 Dernières quotes ({}/{}) :", quotes.len() - start, quotes.len())];
-                                                            for (i, q) in quotes[start..].iter().enumerate() {
-                                                                let num = start + i + 1;
-                                                                let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
-                                                                let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
-                                                                lines.push(format!("#{} — \"{}\" — {}", num, text, author));
-                                                            }
-                                                            lines.join("\n")
-                                                        }
-                                                    } else if args == "count" {
-                                                        format!("📖 {} quote(s) sauvegardée(s)", quotes.len())
-                                                    } else if args.starts_with("del ") || args.starts_with("delete ") {
-                                                        let num_str = args.split_whitespace().nth(1).unwrap_or("");
-                                                        if let Ok(num) = num_str.parse::<usize>() {
-                                                            if num >= 1 && num <= quotes.len() {
-                                                                let removed = quotes.remove(num - 1);
-                                                                save_json(quotes_path, &quotes);
-                                                                let text = removed.get("text").and_then(|v| v.as_str()).unwrap_or("?");
-                                                                format!("🗑️ Quote #{} supprimée : \"{}\"", num, text)
-                                                            } else {
-                                                                format!("❌ Numéro invalide (1-{})", quotes.len())
-                                                            }
-                                                        } else {
-                                                            "❌ Usage: !quote del <numéro>".to_string()
-                                                        }
-                                                    } else if args.is_empty() {
-                                                        // Random quote
-                                                        if quotes.is_empty() {
-                                                            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
-                                                        } else {
-                                                            let idx = rand::thread_rng().gen_range(0..quotes.len());
-                                                            let q = &quotes[idx];
-                                                            let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
-                                                            let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
-                                                            let date = q.get("date").and_then(|v| v.as_str()).unwrap_or("");
-                                                            format!("💬 #{}/{} — \"{}\" — {} ({})", idx + 1, quotes.len(), text, author, date)
-                                                        }
-                                                    } else {
-                                                        "❌ Usage: !quote [add <texte>|list|count|del <n>]".to_string()
-                                                    };
+                                                    let commands::QuoteAction::Response(response) = commands::quote_command(args, &invoker.name, "data/quotes.json");
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!history") {
                                                     let args = message.get(8..).unwrap_or("").trim();
-                                                    let count: usize = args.parse().unwrap_or(20).clamp(1, 50);
                                                     let hist = chat_history.lock().await;
-                                                    if hist.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("📜 Aucun historique.".to_string(), &reply_target, reply_sender_id));
-                                                    } else {
-                                                        let start = if hist.len() > count { hist.len() - count } else { 0 };
-                                                        let mut lines = vec![format!("📜 Derniers {} message(s) :", hist.len() - start)];
-                                                        for (ts, author, text) in hist.iter().skip(start) {
-                                                            let truncated = if text.len() > 100 {
-                                                                format!("{}...", truncate_str(text, 100))
-                                                            } else {
-                                                                text.clone()
-                                                            };
-                                                            lines.push(format!("[{}] {} : {}", ts, author, truncated));
-                                                        }
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
-                                                    }
+                                                    let response = match commands::history_response(&hist, args) {
+                                                        Some(formatted) => formatted,
+                                                        None => "📜 Aucun historique.".to_string(),
+                                                    };
                                                     drop(hist);
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower == "!ping" {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         commands::ping_response(start_time.elapsed().as_secs()),

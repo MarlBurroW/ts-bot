@@ -6,6 +6,7 @@
 use rand::Rng;
 
 use crate::models::BotStats;
+use crate::persistence::{load_json, save_json};
 use crate::utils::{format_uptime, truncate_str};
 
 /// Returns the help text listing all available commands.
@@ -209,6 +210,109 @@ pub fn eight_ball(sender_name: &str, question: &str) -> Option<String> {
     ))
 }
 
+/// Quote book command result.
+pub enum QuoteAction {
+    /// A response message to send back.
+    Response(String),
+}
+
+/// Handle the `!quote` command with subcommands: add, list, count, del, or random.
+///
+/// Loads/saves quotes from `quotes_path` (JSON array of objects with text/author/date).
+pub fn quote_command(args: &str, sender_name: &str, quotes_path: &str) -> QuoteAction {
+    let mut quotes: Vec<serde_json::Value> = load_json(quotes_path);
+
+    let response = if args.starts_with("add ") || args.starts_with("add\t") {
+        let quote_text = args[4..].trim();
+        if quote_text.is_empty() {
+            "❌ Usage: !quote add <texte>".to_string()
+        } else if quote_text.len() > 500 {
+            "❌ Quote trop longue (max 500 caractères)".to_string()
+        } else {
+            let entry = serde_json::json!({
+                "text": quote_text,
+                "author": sender_name,
+                "date": chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string(),
+            });
+            quotes.push(entry);
+            save_json(quotes_path, &quotes);
+            format!("💬 Quote #{} sauvegardée !", quotes.len())
+        }
+    } else if args == "list" {
+        if quotes.is_empty() {
+            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
+        } else {
+            let start = if quotes.len() > 5 { quotes.len() - 5 } else { 0 };
+            let mut lines = vec![format!("📖 Dernières quotes ({}/{}) :", quotes.len() - start, quotes.len())];
+            for (i, q) in quotes[start..].iter().enumerate() {
+                let num = start + i + 1;
+                let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
+                lines.push(format!("#{} — \"{}\" — {}", num, text, author));
+            }
+            lines.join("\n")
+        }
+    } else if args == "count" {
+        format!("📖 {} quote(s) sauvegardée(s)", quotes.len())
+    } else if args.starts_with("del ") || args.starts_with("delete ") {
+        let num_str = args.split_whitespace().nth(1).unwrap_or("");
+        if let Ok(num) = num_str.parse::<usize>() {
+            if num >= 1 && num <= quotes.len() {
+                let removed = quotes.remove(num - 1);
+                save_json(quotes_path, &quotes);
+                let text = removed.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                format!("🗑️ Quote #{} supprimée : \"{}\"", num, text)
+            } else {
+                format!("❌ Numéro invalide (1-{})", quotes.len())
+            }
+        } else {
+            "❌ Usage: !quote del <numéro>".to_string()
+        }
+    } else if args.is_empty() {
+        // Random quote
+        if quotes.is_empty() {
+            "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
+        } else {
+            let idx = rand::thread_rng().gen_range(0..quotes.len());
+            let q = &quotes[idx];
+            let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+            let author = q.get("author").and_then(|v| v.as_str()).unwrap_or("?");
+            let date = q.get("date").and_then(|v| v.as_str()).unwrap_or("");
+            format!("💬 #{}/{} — \"{}\" — {} ({})", idx + 1, quotes.len(), text, author, date)
+        }
+    } else {
+        "❌ Usage: !quote [add <texte>|list|count|del <n>]".to_string()
+    };
+
+    QuoteAction::Response(response)
+}
+
+/// Handle the `!history` command — return formatted recent chat history.
+///
+/// Returns `None` if history is empty, `Some(formatted)` otherwise.
+pub fn history_response(
+    history: &std::collections::VecDeque<(String, String, String)>,
+    args: &str,
+) -> Option<String> {
+    let count: usize = args.parse().unwrap_or(20).clamp(1, 50);
+
+    if history.is_empty() {
+        return None;
+    }
+
+    let start = if history.len() > count { history.len() - count } else { 0 };
+    let mut lines = vec![format!("📜 Derniers {} message(s) :", history.len() - start)];
+    for (ts, author, text) in history.iter().skip(start) {
+        let truncated = if text.len() > 100 {
+            format!("{}...", truncate_str(text, 100))
+        } else {
+            text.clone()
+        };
+        lines.push(format!("[{}] {} : {}", ts, author, truncated));
+    }
+    Some(lines.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +380,85 @@ mod tests {
         let resp = stats_response(3600, &stats);
         assert!(resp.contains("Statistiques"));
         assert!(resp.contains("Messages reçus"));
+    }
+
+    #[test]
+    fn test_quote_empty_usage() {
+        let tmp = "/tmp/test_quotes_empty.json";
+        let _ = std::fs::remove_file(tmp);
+        let QuoteAction::Response(resp) = quote_command("", "tester", tmp);
+        assert!(resp.contains("Aucune quote"));
+    }
+
+    #[test]
+    fn test_quote_add_and_count() {
+        let tmp = "/tmp/test_quotes_add.json";
+        let _ = std::fs::remove_file(tmp);
+        let QuoteAction::Response(resp) = quote_command("add Hello world", "tester", tmp);
+        assert!(resp.contains("#1"));
+        let QuoteAction::Response(resp) = quote_command("count", "tester", tmp);
+        assert!(resp.contains("1 quote"));
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_quote_add_too_long() {
+        let tmp = "/tmp/test_quotes_long.json";
+        let _ = std::fs::remove_file(tmp);
+        let long = "x".repeat(501);
+        let QuoteAction::Response(resp) = quote_command(&format!("add {}", long), "tester", tmp);
+        assert!(resp.contains("trop longue"));
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_quote_list_and_del() {
+        let tmp = "/tmp/test_quotes_list.json";
+        let _ = std::fs::remove_file(tmp);
+        let _ = quote_command("add Quote one", "alice", tmp);
+        let _ = quote_command("add Quote two", "bob", tmp);
+        let QuoteAction::Response(resp) = quote_command("list", "alice", tmp);
+        assert!(resp.contains("Quote one"));
+        assert!(resp.contains("Quote two"));
+        let QuoteAction::Response(resp) = quote_command("del 1", "alice", tmp);
+        assert!(resp.contains("supprimée"));
+        let QuoteAction::Response(resp) = quote_command("count", "alice", tmp);
+        assert!(resp.contains("1 quote"));
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_quote_invalid_subcommand() {
+        let tmp = "/tmp/test_quotes_invalid.json";
+        let _ = std::fs::remove_file(tmp);
+        let QuoteAction::Response(resp) = quote_command("blah", "tester", tmp);
+        assert!(resp.contains("Usage"));
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_history_empty() {
+        let hist = std::collections::VecDeque::new();
+        assert!(history_response(&hist, "").is_none());
+    }
+
+    #[test]
+    fn test_history_with_entries() {
+        let mut hist = std::collections::VecDeque::new();
+        hist.push_back(("12:00".to_string(), "alice".to_string(), "hello".to_string()));
+        hist.push_back(("12:01".to_string(), "bob".to_string(), "world".to_string()));
+        let resp = history_response(&hist, "").unwrap();
+        assert!(resp.contains("alice"));
+        assert!(resp.contains("bob"));
+        assert!(resp.contains("2 message"));
+    }
+
+    #[test]
+    fn test_history_truncates_long_messages() {
+        let mut hist = std::collections::VecDeque::new();
+        let long_msg = "x".repeat(200);
+        hist.push_back(("12:00".to_string(), "alice".to_string(), long_msg));
+        let resp = history_response(&hist, "").unwrap();
+        assert!(resp.contains("..."));
     }
 }
