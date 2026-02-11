@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod models;
 pub mod tts;
+pub mod utils;
 pub mod websocket;
 
 // Re-export commonly used types

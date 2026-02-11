@@ -1,86 +1,8 @@
 mod ts3;
 
-/// Record a chat history entry: push to ring buffer + append to JSONL file
-async fn record_history(
-    history: &tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>,
-    author: String,
-    text: String,
-) {
-    let ts = chrono::Utc::now().format("%H:%M").to_string();
-    let full_ts = chrono::Utc::now().to_rfc3339();
-    {
-        let mut hist = history.lock().await;
-        hist.push_back((ts.clone(), author.clone(), text.clone()));
-        if hist.len() > 200 { hist.pop_front(); }
-    }
-    // Append to JSONL file (best-effort, don't block on errors)
-    let line = serde_json::json!({
-        "t": full_ts,
-        "a": author,
-        "m": text,
-    });
-    if let Ok(mut f) = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("data/chat_history.jsonl")
-        .await
-    {
-        use tokio::io::AsyncWriteExt;
-        let _ = f.write_all(format!("{}\n", line).as_bytes()).await;
-    }
-}
-
-/// Load chat history from JSONL file (last 200 entries), trim file if >500 lines
-fn load_chat_history() -> std::collections::VecDeque<(String, String, String)> {
-    let mut history = std::collections::VecDeque::with_capacity(200);
-    let path = "data/chat_history.jsonl";
-    if let Ok(content) = std::fs::read_to_string(path) {
-        let lines: Vec<&str> = content.lines().collect();
-        // Trim file if over 500 lines (keep last 300)
-        if lines.len() > 500 {
-            let trimmed: Vec<&str> = lines[lines.len() - 300..].to_vec();
-            let _ = std::fs::write(path, trimmed.join("\n") + "\n");
-            tracing::info!("Trimmed chat_history.jsonl from {} to 300 lines", lines.len());
-        }
-        // Load last 200 into memory
-        let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
-        for line in &lines[start..] {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                let full_ts = v.get("t").and_then(|t| t.as_str()).unwrap_or("");
-                // Extract HH:MM from ISO timestamp
-                let ts = if full_ts.len() >= 16 {
-                    full_ts[11..16].to_string()
-                } else {
-                    full_ts.to_string()
-                };
-                let author = v.get("a").and_then(|a| a.as_str()).unwrap_or("").to_string();
-                let text = v.get("m").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                if !author.is_empty() {
-                    history.push_back((ts, author, text));
-                }
-            }
-        }
-        if !history.is_empty() {
-            tracing::info!("Loaded {} chat history entries from disk", history.len());
-        }
-    }
-    history
-}
-
-/// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8 char.
-fn truncate_str(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, Reminder};
+use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
 use ts3_bot::websocket;
 use ts3_bot::websocket::TtsRequest;
 use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, TtsSynthesizer};
@@ -138,30 +60,6 @@ enum WhisperResult {
         audio_len: usize,
         detected_language: Option<String>,
     },
-}
-
-/// Persist language preferences to disk
-fn save_language_prefs(overrides: &HashMap<String, String>) -> Result<()> {
-    let _ = std::fs::create_dir_all("data");
-    let json = serde_json::to_string_pretty(overrides)?;
-    std::fs::write("data/language_prefs.json", json)?;
-    info!("Saved {} language preference(s)", overrides.len());
-    Ok(())
-}
-
-/// Update bot nickname to reflect listening state (e.g. "Marlbot 🎤" when listening)
-async fn update_bot_nickname(
-    sender: &mut tsclientlib::sync::SyncConnectionHandle,
-    is_listening: bool,
-) {
-    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-    let nickname = if is_listening { "Marlbot \u{1F3A4}" } else { "Marlbot" };
-    let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientupdate");
-    cmd.write_arg("client_nickname", &nickname);
-    match sender.send_command(cmd).await {
-        Ok(()) => debug!("Nickname updated to '{}'", nickname),
-        Err(e) => debug!("Nickname update failed: {:?}", e),
-    }
 }
 
 #[tokio::main]
@@ -362,58 +260,6 @@ async fn main() -> Result<()> {
 
     // Bot usage statistics — persisted to data/stats.json
     let bot_stats = Arc::new(BotStats::load());
-
-    fn parse_duration_str(s: &str) -> Option<u64> {
-        // Parse durations like "30m", "2h", "1h30m", "90s", "1d", "1j"
-        let s = s.trim().to_lowercase();
-        if s.is_empty() {
-            return None;
-        }
-        let mut total_ms: u64 = 0;
-        let mut num_buf = String::new();
-        for ch in s.chars() {
-            if ch.is_ascii_digit() {
-                num_buf.push(ch);
-            } else {
-                let n: u64 = num_buf.parse().ok()?;
-                num_buf.clear();
-                match ch {
-                    's' => total_ms += n * 1000,
-                    'm' => total_ms += n * 60 * 1000,
-                    'h' => total_ms += n * 3600 * 1000,
-                    'd' | 'j' => total_ms += n * 86400 * 1000,
-                    _ => return None,
-                }
-            }
-        }
-        // Bare number without unit → treat as minutes
-        if !num_buf.is_empty() {
-            let n: u64 = num_buf.parse().ok()?;
-            if total_ms == 0 {
-                total_ms += n * 60 * 1000; // bare number = minutes
-            } else {
-                return None; // trailing digits without unit after a valid part
-            }
-        }
-        if total_ms > 0 { Some(total_ms) } else { None }
-    }
-
-    fn format_duration_ms(ms: u64) -> String {
-        let secs = ms / 1000;
-        if secs < 60 {
-            format!("{}s", secs)
-        } else if secs < 3600 {
-            format!("{}m", secs / 60)
-        } else if secs < 86400 {
-            let h = secs / 3600;
-            let m = (secs % 3600) / 60;
-            if m > 0 { format!("{}h{}m", h, m) } else { format!("{}h", h) }
-        } else {
-            let d = secs / 86400;
-            let h = (secs % 86400) / 3600;
-            if h > 0 { format!("{}j{}h", d, h) } else { format!("{}j", d) }
-        }
-    }
 
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
