@@ -331,6 +331,16 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(map))
     };
 
+    // Active poll: (question, options, votes_per_option: Vec<HashSet<UID>>, creator_name, created_at)
+    // Only one poll active at a time. Persisted to data/poll.json
+    struct ActivePoll {
+        question: String,
+        options: Vec<String>,
+        votes: Vec<std::collections::HashSet<String>>, // UID sets per option
+        creator: String,
+    }
+    let active_poll: Arc<Mutex<Option<ActivePoll>>> = Arc::new(Mutex::new(None));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -1094,6 +1104,8 @@ async fn main() -> Result<()> {
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
                                                          • [b]!notify[/b] [nom|clear] — être notifié (poke) quand quelqu'un se connecte\n\
                                                          • [b]!afk[/b] <message> — se marquer AFK (auto-clear quand tu parles)\n\
+                                                         • [b]!poll[/b] Question | Opt1 | Opt2 — créer un sondage\n\
+                                                         • [b]!vote[/b] <n> — voter dans le sondage en cours\n\
                                                          • [b]!ping[/b] — latence vers le serveur TS3\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -1949,6 +1961,111 @@ async fn main() -> Result<()> {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("💤 AFK activé : [b]{}[/b] — tape !afk pour revenir", afk_msg), &reply_target, reply_sender_id));
                                                     }
                                                     drop(afk);
+                                                } else if msg_lower.starts_with("!poll") {
+                                                    let arg = message.get(5..).unwrap_or("").trim();
+                                                    let poll_ref = active_poll.clone();
+
+                                                    if arg.is_empty() || arg == "help" {
+                                                        // Show current poll or help
+                                                        let poll = poll_ref.lock().await;
+                                                        if let Some(ref p) = *poll {
+                                                            let total_votes: usize = p.votes.iter().map(|v| v.len()).sum();
+                                                            let mut lines = vec![format!("📊 [b]{}[/b] (par {}, {} vote{})", p.question, p.creator, total_votes, if total_votes != 1 { "s" } else { "" })];
+                                                            for (i, opt) in p.options.iter().enumerate() {
+                                                                let count = p.votes[i].len();
+                                                                let bar = "█".repeat(count.min(10));
+                                                                lines.push(format!("  [b]{}.[/b] {} {} ({})", i + 1, opt, bar, count));
+                                                            }
+                                                            lines.push("Vote : [b]!vote <n>[/b] — Fin : [b]!poll end[/b]".to_string());
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "📊 Aucun sondage en cours.\n\
+                                                                 Créer : [b]!poll Question ? | Option 1 | Option 2 | ...[/b]\n\
+                                                                 Voter : [b]!vote <n>[/b]\n\
+                                                                 Résultats : [b]!poll[/b]\n\
+                                                                 Terminer : [b]!poll end[/b]".to_string(),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    } else if arg == "end" || arg == "stop" || arg == "close" {
+                                                        let mut poll = poll_ref.lock().await;
+                                                        if let Some(p) = poll.take() {
+                                                            let total_votes: usize = p.votes.iter().map(|v| v.len()).sum();
+                                                            let mut lines = vec![format!("🏁 Sondage terminé : [b]{}[/b] ({} vote{})", p.question, total_votes, if total_votes != 1 { "s" } else { "" })];
+                                                            // Find winner(s)
+                                                            let max_votes = p.votes.iter().map(|v| v.len()).max().unwrap_or(0);
+                                                            for (i, opt) in p.options.iter().enumerate() {
+                                                                let count = p.votes[i].len();
+                                                                let bar = "█".repeat(count.min(10));
+                                                                let winner = if count == max_votes && max_votes > 0 { " 👑" } else { "" };
+                                                                lines.push(format!("  [b]{}.[/b] {} {} ({}){}", i + 1, opt, bar, count, winner));
+                                                            }
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::channel(lines.join("\n")));
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun sondage en cours.".to_string(), &reply_target, reply_sender_id));
+                                                        }
+                                                    } else {
+                                                        // Create new poll: !poll Question ? | Option 1 | Option 2 | ...
+                                                        let parts: Vec<&str> = arg.split('|').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                                                        if parts.len() < 3 {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Minimum 1 question + 2 options. Format : [b]!poll Question ? | Opt1 | Opt2[/b]".to_string(), &reply_target, reply_sender_id));
+                                                        } else if parts.len() > 11 {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Maximum 10 options.".to_string(), &reply_target, reply_sender_id));
+                                                        } else {
+                                                            let mut poll = poll_ref.lock().await;
+                                                            let question = truncate_str(parts[0], 200).to_string();
+                                                            let options: Vec<String> = parts[1..].iter().map(|s| truncate_str(s, 100).to_string()).collect();
+                                                            let num_options = options.len();
+                                                            let new_poll = ActivePoll {
+                                                                question: question.clone(),
+                                                                options: options.clone(),
+                                                                votes: vec![std::collections::HashSet::new(); num_options],
+                                                                creator: sender_name.clone(),
+                                                            };
+                                                            *poll = Some(new_poll);
+                                                            let mut lines = vec![format!("📊 Nouveau sondage par [b]{}[/b] : [b]{}[/b]", sender_name, question)];
+                                                            for (i, opt) in options.iter().enumerate() {
+                                                                lines.push(format!("  [b]{}.[/b] {}", i + 1, opt));
+                                                            }
+                                                            lines.push("Vote avec [b]!vote <n>[/b]".to_string());
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::channel(lines.join("\n")));
+                                                        }
+                                                    }
+                                                } else if msg_lower.starts_with("!vote") {
+                                                    let arg = message.get(5..).unwrap_or("").trim();
+                                                    let poll_ref = active_poll.clone();
+                                                    let mut poll = poll_ref.lock().await;
+                                                    if let Some(ref mut p) = *poll {
+                                                        if let Ok(n) = arg.parse::<usize>() {
+                                                            if n >= 1 && n <= p.options.len() {
+                                                                // Remove previous vote from any option
+                                                                let mut changed_from: Option<usize> = None;
+                                                                for (i, votes) in p.votes.iter_mut().enumerate() {
+                                                                    if votes.remove(&sender_uid) {
+                                                                        changed_from = Some(i + 1);
+                                                                    }
+                                                                }
+                                                                p.votes[n - 1].insert(sender_uid.clone());
+                                                                let msg = if let Some(old) = changed_from {
+                                                                    if old == n {
+                                                                        format!("✅ {} a voté pour [b]{}. {}[/b]", sender_name, n, p.options[n - 1])
+                                                                    } else {
+                                                                        format!("🔄 {} a changé son vote : {} → [b]{}. {}[/b]", sender_name, old, n, p.options[n - 1])
+                                                                    }
+                                                                } else {
+                                                                    format!("✅ {} a voté pour [b]{}. {}[/b]", sender_name, n, p.options[n - 1])
+                                                                };
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::channel(msg));
+                                                            } else {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("❌ Choisis entre 1 et {}", p.options.len()), &reply_target, reply_sender_id));
+                                                            }
+                                                        } else {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Usage : [b]!vote <numéro>[/b]".to_string(), &reply_target, reply_sender_id));
+                                                        }
+                                                    } else {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun sondage en cours. Crée-en un avec [b]!poll[/b]".to_string(), &reply_target, reply_sender_id));
+                                                    }
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {

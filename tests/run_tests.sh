@@ -50,7 +50,7 @@ sq_send_and_check() {
     local log_lines_before=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
     
     # Send message
-    sq_cmd "sendtextmessage targetmode=2 msg=$(echo "$msg" | sed 's/ /\\s/g')" >/dev/null 2>&1
+    sq_cmd "sendtextmessage targetmode=2 msg=$(echo "$msg" | sed 's/ /\\s/g; s/|/\\p/g')" >/dev/null 2>&1
     
     # Wait and check logs for expected response
     local elapsed=0
@@ -579,10 +579,46 @@ test_afk_clear() {
     fi
 }
 
+test_poll_create() {
+    if sq_send_and_check "!poll Pizza ou Sushi ? | Pizza | Sushi" "Nouveau sondage"; then
+        log_pass "!poll creates a poll"
+    else
+        log_fail "!poll creates a poll" "no response"
+    fi
+}
+
+test_poll_show() {
+    if sq_send_and_check "!poll" "Pizza ou Sushi"; then
+        log_pass "!poll shows current poll"
+    else
+        log_fail "!poll shows current poll" "no response"
+    fi
+}
+
+test_vote() {
+    if sq_send_and_check "!vote 1" "a voté pour"; then
+        log_pass "!vote registers a vote"
+    else
+        log_fail "!vote registers a vote" "no response"
+    fi
+}
+
+test_poll_end() {
+    if sq_send_and_check "!poll end" "Sondage terminé"; then
+        log_pass "!poll end closes the poll"
+    else
+        log_fail "!poll end closes the poll" "no response"
+    fi
+}
+
 test_find_command
 test_find_empty
 test_afk_set
 test_afk_clear
+test_poll_create
+test_poll_show
+test_vote
+test_poll_end
 test_bot_does_not_crash
 
 echo ""
