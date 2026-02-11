@@ -95,6 +95,20 @@ pub fn format_duration_ms(ms: u64) -> String {
     }
 }
 
+/// Persist a single field in `data/bot_state.json` using read-modify-write.
+/// Preserves all other fields in the JSON object.
+pub fn save_bot_state_field(key: &str, value: &str) {
+    let _ = std::fs::create_dir_all("data");
+    let mut state: serde_json::Value = std::fs::read_to_string("data/bot_state.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    state[key] = serde_json::Value::String(value.to_string());
+    if let Ok(json) = serde_json::to_string_pretty(&state) {
+        let _ = std::fs::write("data/bot_state.json", json);
+    }
+}
+
 /// Persist language preferences to disk.
 pub fn save_language_prefs(overrides: &HashMap<String, String>) -> Result<()> {
     let _ = std::fs::create_dir_all("data");

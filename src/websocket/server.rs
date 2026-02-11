@@ -17,33 +17,7 @@ use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 use crate::models::{BotConfig, SharedChatHistory, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
-
-/// Persist default voice to bot_state.json (read-modify-write)
-fn save_voice_to_bot_state(voice: &str) {
-    let _ = std::fs::create_dir_all("data");
-    // Read existing state
-    let mut state: serde_json::Value = std::fs::read_to_string("data/bot_state.json")
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    state["voice"] = serde_json::Value::String(voice.to_string());
-    if let Ok(json) = serde_json::to_string_pretty(&state) {
-        let _ = std::fs::write("data/bot_state.json", json);
-    }
-}
-
-/// Persist language preferences to disk (WS server context)
-fn save_language_prefs_ws(overrides: &HashMap<String, String>) {
-    let _ = std::fs::create_dir_all("data");
-    match serde_json::to_string_pretty(overrides) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write("data/language_prefs.json", json) {
-                warn!("Failed to save language prefs: {}", e);
-            }
-        }
-        Err(e) => warn!("Failed to serialize language prefs: {}", e),
-    }
-}
+use crate::utils::{save_language_prefs, save_bot_state_field};
 
 /// Shared TS3 connection handle, set once connected.
 /// `None` if TS3 is not yet connected.
@@ -275,7 +249,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         CommandAction::SetVoice { command_id, voice } => {
                             if let Some(ref dv) = default_voice {
                                 *dv.write().unwrap() = voice.clone();
-                                save_voice_to_bot_state(&voice);
+                                save_bot_state_field("voice", &voice);
                                 info!("Default TTS voice set to '{}' via WebSocket", voice);
                                 let _ = event_tx.send(WebSocketEvent::command_success(
                                     command_id,
@@ -795,12 +769,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     if language == "auto" {
                                         overrides.remove(&uid);
                                         info!("Language override removed for {} (client {}) via WS", uid, client_id);
-                                        save_language_prefs_ws(&overrides);
+                                        let _ = save_language_prefs(&overrides);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language reset to auto-detect for client {}", client_id))));
                                     } else {
                                         overrides.insert(uid.clone(), language.clone());
                                         info!("Language override set to '{}' for {} (client {}) via WS", language, uid, client_id);
-                                        save_language_prefs_ws(&overrides);
+                                        let _ = save_language_prefs(&overrides);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language set to '{}' for client {}", language, client_id))));
                                     }
                                 } else {

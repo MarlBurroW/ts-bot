@@ -1,6 +1,6 @@
 {
-  "messages_received": 0,
-  "commands_executed": 0,
+  "messages_received": 158,
+  "commands_executed": 144,
   "tts_calls": 0,
   "voice_transcriptions": 0,
   "greetings_sent": 0
