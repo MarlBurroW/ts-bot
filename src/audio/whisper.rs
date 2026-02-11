@@ -52,17 +52,6 @@ impl WhisperTranscriber {
         (sum_sq / samples.len() as f32).sqrt()
     }
 
-    /// Check if audio has enough energy to be speech
-    /// Strict energy check for wake word detection (higher threshold to avoid hallucinations)
-    pub fn has_speech_energy_strict(samples: &[f32]) -> bool {
-        let rms = Self::rms_energy(samples);
-        let has_energy = rms > 0.008;
-        if !has_energy {
-            debug!("Audio below strict speech threshold: RMS={:.6} (threshold=0.008)", rms);
-        }
-        has_energy
-    }
-
     pub fn has_speech_energy(samples: &[f32]) -> bool {
         let rms = Self::rms_energy(samples);
         let has_energy = rms > MIN_SPEECH_RMS;
@@ -180,64 +169,6 @@ impl WhisperTranscriber {
         Ok(full_text)
     }
 
-    /// Quick transcription for wake word detection
-    /// Uses faster settings optimized for short phrases
-    pub fn transcribe_wake_word(&mut self, samples: &[f32]) -> Result<String> {
-        if samples.is_empty() {
-            return Ok(String::new());
-        }
-
-        // Skip silent/ambient noise audio (strict threshold for wake word)
-        if !Self::has_speech_energy_strict(samples) {
-            return Ok(String::new());
-        }
-
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-
-        params.set_language(Some("fr"));
-        params.set_translate(false);
-        self.apply_common_params(&mut params);
-        params.set_max_tokens(16); // Wake word may need more tokens
-
-        let mut state = self.context.create_state()
-            .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {}", e))?;
-
-        // Pad to at least 1 second for Whisper minimum requirement
-        let min_samples = 32000; // 2 seconds at 16kHz (Whisper needs margin)
-        let padded_samples;
-        let audio = if samples.len() < min_samples {
-            padded_samples = {
-                let mut v = samples.to_vec();
-                v.resize(min_samples, 0.0);
-                v
-            };
-            &padded_samples
-        } else {
-            samples
-        };
-
-        state.full(params, audio)
-            .map_err(|e| anyhow::anyhow!("Wake word detection failed: {}", e))?;
-
-        let num_segments = state.full_n_segments()
-            .map_err(|e| anyhow::anyhow!("Failed to get segments: {}", e))?;
-
-        let mut text = String::new();
-        for i in 0..num_segments {
-            if let Ok(segment) = state.full_get_segment_text(i) {
-                text.push_str(&segment);
-            }
-        }
-
-        let result = text.to_lowercase();
-
-        // Filter out repetition loops
-        if Self::is_repetition(&result) {
-            return Ok(String::new());
-        }
-
-        Ok(result)
-    }
 }
 
 #[cfg(test)]

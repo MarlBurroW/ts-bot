@@ -14,8 +14,8 @@ pub struct AudioBuffer {
     max_samples: usize,
     /// Last time audio was added
     last_activity: Instant,
-    /// Last time wake word detection was run
-    last_wake_check: Instant,
+    /// Last time a transcription check was run
+    last_check: Instant,
     /// Is this speaker currently being transcribed?
     pub is_active: bool,
     /// Per-speaker Opus decoder (Opus is stateful per-stream)
@@ -46,7 +46,7 @@ impl AudioBuffer {
             samples: VecDeque::with_capacity(max_samples),
             max_samples,
             last_activity: Instant::now(),
-            last_wake_check: Instant::now(),
+            last_check: Instant::now(),
             is_active: false,
             opus_decoder,
         }
@@ -133,14 +133,9 @@ impl AudioBuffer {
         self.last_activity.elapsed() > duration
     }
 
-    /// Check if enough time has passed to run wake word detection again
-    pub fn should_check_wake_word(&self, interval: Duration) -> bool {
-        self.last_wake_check.elapsed() >= interval
-    }
-
-    /// Mark that wake word detection was just run
-    pub fn mark_wake_check(&mut self) {
-        self.last_wake_check = Instant::now();
+    /// Mark that a transcription check was just run
+    pub fn mark_check(&mut self) {
+        self.last_check = Instant::now();
     }
 
     /// Activate transcription for this speaker

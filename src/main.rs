@@ -764,7 +764,7 @@ async fn main() -> Result<()> {
                                     // Reset wake check timer for re-detection
                                     let mut bm = buffer_manager.lock().await;
                                     if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                        buf.mark_wake_check();
+                                        buf.mark_check();
                                     }
                                 }
                             }
@@ -816,7 +816,7 @@ async fn main() -> Result<()> {
                                                 info!("Skipping transcription for {} — audio too quiet (RMS: {:.4})", speaker_name, rms_energy);
                                                 bm = buffer_manager.lock().await;
                                                 if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                                    buf.mark_wake_check();
+                                                    buf.mark_check();
                                                 }
                                                 break;
                                             }
@@ -926,7 +926,7 @@ async fn main() -> Result<()> {
                                             // Reset wake check timer even if no audio
                                             bm = buffer_manager.lock().await;
                                             if let Some(buf) = bm.get_buffer_mut(speaker_id) {
-                                                buf.mark_wake_check();
+                                                buf.mark_check();
                                             }
                                         }
 
