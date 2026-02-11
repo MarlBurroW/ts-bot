@@ -82,22 +82,31 @@ struct AppState {
     chat_history: Option<SharedChatHistory>,
 }
 
+/// Bundled parameters for `run_server`, avoiding a long argument list.
+pub struct WebSocketServerParams {
+    /// Optional TTS request channel (None if TTS disabled)
+    pub tts_tx: Option<tokio::sync::mpsc::Sender<TtsRequest>>,
+    /// Shared TS3 connection handle (populated after TS3 connects)
+    pub ts3_handle: SharedTs3Handle,
+    /// Shared flag to stop TTS playback remotely
+    pub tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared buffer manager for activating speaker listening
+    pub buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
+    /// Per-speaker Whisper language overrides (UID -> lang code)
+    pub language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
+    /// Shared TTS volume level (0-200, 100 = normal)
+    pub tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
+    /// Shared default TTS voice (runtime-adjustable)
+    pub default_voice: Option<Arc<std::sync::RwLock<String>>>,
+    /// Shared chat history ring buffer
+    pub chat_history: Option<SharedChatHistory>,
+}
+
 /// Run the WebSocket server
-///
-/// - `tts_tx`: optional channel to forward TTS speak requests (None if TTS disabled)
-/// - `ts3_handle`: shared TS3 connection handle (populated after TS3 connects)
-#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     config: BotConfig,
     event_broadcaster: broadcast::Sender<WebSocketEvent>,
-    tts_tx: Option<tokio::sync::mpsc::Sender<TtsRequest>>,
-    ts3_handle: SharedTs3Handle,
-    tts_stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
-    language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
-    tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
-    default_voice: Option<Arc<std::sync::RwLock<String>>>,
-    chat_history: Option<SharedChatHistory>,
+    params: WebSocketServerParams,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -105,16 +114,16 @@ pub async fn run_server(
     // Create shared state
     let state = AppState {
         event_broadcaster: Arc::new(event_broadcaster),
-        tts_tx,
-        ts3_handle,
+        tts_tx: params.tts_tx,
+        ts3_handle: params.ts3_handle,
         bot_nickname: config.ts3_nickname.clone(),
         ts3_server: config.ts3_server.clone(),
-        tts_stop_flag,
-        buffer_manager,
-        language_overrides,
-        tts_volume,
-        default_voice,
-        chat_history,
+        tts_stop_flag: params.tts_stop_flag,
+        buffer_manager: params.buffer_manager,
+        language_overrides: params.language_overrides,
+        tts_volume: params.tts_volume,
+        default_voice: params.default_voice,
+        chat_history: params.chat_history,
     };
 
     // Create Axum router with WebSocket endpoint

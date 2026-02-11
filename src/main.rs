@@ -2964,7 +2964,17 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws, default_voice_for_ws, chat_history_for_ws).await {
+        let ws_params = websocket::WebSocketServerParams {
+            tts_tx: tts_tx_for_ws,
+            ts3_handle: shared_ts3_handle_for_ws,
+            tts_stop_flag: tts_stop_flag_for_ws,
+            buffer_manager: buffer_manager_for_ws,
+            language_overrides: language_overrides_for_ws,
+            tts_volume: tts_volume_for_ws,
+            default_voice: default_voice_for_ws,
+            chat_history: chat_history_for_ws,
+        };
+        if let Err(e) = websocket::run_server(ws_config, event_tx, ws_params).await {
             error!("WebSocket server error: {}", e);
         }
     });
