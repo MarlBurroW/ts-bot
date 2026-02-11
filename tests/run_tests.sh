@@ -436,6 +436,33 @@ test_history_command() {
     fi
 }
 
+test_voice_command() {
+    # !voice should show current voice + available voices
+    if sq_send_and_check "!voice" "voix" 3; then
+        log_pass "!voice shows current voice"
+    else
+        log_fail "!voice shows current voice" "no voice info in response"
+    fi
+}
+
+test_voice_set() {
+    # !voice nova should change the default voice
+    if sq_send_and_check "!voice nova" "nova" 3; then
+        log_pass "!voice nova changes default voice"
+    else
+        log_fail "!voice nova changes default voice" "no confirmation"
+    fi
+}
+
+test_seen_command() {
+    # !seen should show tracked count
+    if sq_send_and_check "!seen" "👁️" 3; then
+        log_pass "!seen shows tracked users"
+    else
+        log_fail "!seen shows tracked users" "no seen response"
+    fi
+}
+
 test_bot_does_not_crash() {
     if kill -0 "$BOT_PID" 2>/dev/null; then
         log_pass "Bot still running after all tests"
@@ -475,6 +502,9 @@ test_quote_add
 test_quote_random
 test_quote_count
 test_history_command
+test_voice_command
+test_voice_set
+test_seen_command
 test_bot_does_not_crash
 
 echo ""

@@ -232,6 +232,18 @@ async fn main() -> Result<()> {
     // TTS rate limiter: max 5 uses per user per 60 seconds (keyed by client_id)
     let tts_rate_limits: Arc<Mutex<HashMap<u64, Vec<std::time::Instant>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Last-seen tracker: UID -> (name, ISO timestamp) — persisted to data/seen.json
+    let seen_data: Arc<Mutex<HashMap<String, (String, String)>>> = {
+        let map = std::fs::read_to_string("data/seen.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, (String, String)>>(&s).ok())
+            .unwrap_or_default();
+        if !map.is_empty() {
+            info!("Loaded {} seen record(s)", map.len());
+        }
+        Arc::new(Mutex::new(map))
+    };
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -901,6 +913,7 @@ async fn main() -> Result<()> {
                                                          • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
+                                                         • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
                                                         &reply_target, reply_sender_id
@@ -1547,6 +1560,34 @@ async fn main() -> Result<()> {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
                                                     }
                                                     drop(hist);
+                                                } else if msg_lower.starts_with("!seen") {
+                                                    let query = message.get(5..).unwrap_or("").trim();
+                                                    let seen = seen_data.lock().await;
+                                                    if query.is_empty() {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("👁️ {} utilisateur(s) trackés — !seen <nom> pour chercher", seen.len()),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                    } else {
+                                                        let query_lower = query.to_lowercase();
+                                                        let matches: Vec<_> = seen.values()
+                                                            .filter(|(name, _)| name.to_lowercase().contains(&query_lower))
+                                                            .collect();
+                                                        let response = if matches.is_empty() {
+                                                            format!("❌ Aucun résultat pour \"{}\"", query)
+                                                        } else if matches.len() == 1 {
+                                                            let (name, ts) = &matches[0];
+                                                            format!("👁️ {} — dernière déconnexion : {}", name, ts)
+                                                        } else {
+                                                            let mut lines = vec![format!("👁️ {} résultats pour \"{}\" :", matches.len(), query)];
+                                                            for (name, ts) in matches.iter().take(5) {
+                                                                lines.push(format!("• {} — {}", name, ts));
+                                                            }
+                                                            lines.join("\n")
+                                                        };
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
+                                                    }
+                                                    drop(seen);
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
@@ -1784,6 +1825,14 @@ async fn main() -> Result<()> {
                                                     let uid = client.uid.as_ref().map(|u| base64::encode(&u.0));
                                                     let client_id_u64 = client_id.0 as u64;
                                                     info!("Client disconnected: {} (id: {}, uid: {:?})", client.name, client_id_u64, uid);
+                                                    // Record last-seen time
+                                                    if let Some(ref uid_str) = uid {
+                                                        let mut seen = seen_data.lock().await;
+                                                        seen.insert(uid_str.clone(), (client.name.clone(), chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string()));
+                                                        let _ = std::fs::create_dir_all("data");
+                                                        let _ = std::fs::write("data/seen.json", serde_json::to_string_pretty(&*seen).unwrap_or_default());
+                                                        drop(seen);
+                                                    }
                                                     // Deactivate listening if this user was being listened to
                                                     {
                                                         let mut bm = buffer_manager.lock().await;
