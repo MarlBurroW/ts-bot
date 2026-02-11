@@ -4,6 +4,7 @@ use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
 use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
+use ts3_bot::commands;
 use ts3_bot::websocket;
 use rand::Rng;
 use ts3_bot::websocket::TtsRequest;
@@ -1060,38 +1061,7 @@ async fn main() -> Result<()> {
 
                                                 if msg_lower.starts_with("!help") {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                        "📋 Commandes disponibles :\n\
-                                                         • [b]!listen[/b] / [b]!marlbot[/b] — activer l'écoute vocale\n\
-                                                         • [b]!stop[/b] — arrêter l'écoute + couper la parole\n\
-                                                         • [b]!lang[/b] <code> — forcer la langue (fr, en, de...) ou [b]!lang auto[/b]\n\
-                                                         • [b]!who[/b] — qui est dans ton channel ?\n\
-                                                         • [b]!find[/b] <nom> — trouver un utilisateur sur le serveur\n\
-                                                         • [b]!channels[/b] — lister tous les channels du serveur\n\
-                                                         • [b]!tts[/b] [voice:X] [speed:X] <texte> — TTS (voix: alloy/echo/fable/nova/onyx/shimmer...)\n\
-                                                         • [b]!move[/b] <channel> — déplacer le bot vers un channel\n\
-                                                         • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
-                                                         • [b]!replay[/b] — rejouer le dernier message TTS\n\
-                                                         • [b]!voice[/b] [nom] — changer la voix par défaut (alloy/echo/nova/onyx...)\n\
-                                                         • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
-                                                         • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
-                                                         • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\
-                                                         • [b]!timeout[/b] [ms] — régler le délai de silence (500-10000ms, défaut 2000)\n\
-                                                         • [b]!roll[/b] [NdS+M] — lancer des dés (ex: 2d6, d20+3, 100)\n\
-                                                         • [b]!8ball[/b] <question> — boule magique 🎱\n\
-                                                         • [b]!roulette[/b] — roulette russe 🔫 (1/6 chance de kick)\n\
-                                                         • [b]!duel[/b] <nom> — défier quelqu'un en duel (2d6, perdant = kick)\n\
-                                                         • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
-                                                         • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
-                                                         • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
-                                                         • [b]!notify[/b] [nom|clear] — être notifié (poke) quand quelqu'un se connecte\n\
-                                                         • [b]!afk[/b] <message> — se marquer AFK (auto-clear quand tu parles)\n\
-                                                         • [b]!poll[/b] Question | Opt1 | Opt2 — créer un sondage\n\
-                                                         • [b]!vote[/b] <n> — voter dans le sondage en cours\n\
-                                                         • [b]!remind[/b] <durée> <msg> — rappel (ex: !remind 30m Checker le four)\n\
-                                                         • [b]!ping[/b] — latence vers le serveur TS3\n\
-                                                         • [b]!stats[/b] — statistiques d'utilisation (messages, TTS, etc.)\n\
-                                                         • [b]!status[/b] — afficher l'état du bot\n\
-                                                         • [b]!help[/b] — afficher cette aide".to_string(),
+                                                        commands::help_text(),
                                                         &reply_target, reply_sender_id
                                                     ));
                                                 } else if msg_lower.starts_with("!status") {
@@ -1650,65 +1620,11 @@ async fn main() -> Result<()> {
                                                         ));
                                                     }
                                                 } else if msg_lower.starts_with("!roll") || msg_lower.starts_with("!dice") {
-                                                    // Dice roller: !roll [NdS[+/-M]] — default 1d6
                                                     let args = message.split_whitespace().skip(1).collect::<Vec<&str>>().join(" ");
-                                                    let dice_str = if args.trim().is_empty() { "1d6" } else { args.trim() };
-
-                                                    // Parse dice notation: NdS+M or NdS-M
-                                                    let result = (|| -> std::result::Result<String, String> {
-                                                        let s = dice_str.to_lowercase();
-
-                                                        // Check for simple number (e.g., !roll 20 = random 1-20)
-                                                        if let Ok(max) = s.parse::<i64>() {
-                                                            if !(1..=1000000).contains(&max) { return Err("Nombre entre 1 et 1000000 svp".to_string()); }
-                                                            let val = rand::thread_rng().gen_range(1..=max);
-                                                            return Ok(format!("🎲 1-{} → [b]{}[/b]", max, val));
-                                                        }
-
-                                                        // Parse NdS[+/-M]
-                                                        let d_pos = s.find('d').ok_or("Format: NdS, NdS+M, NdS-M (ex: 2d6, 1d20+3)")?;
-                                                        let count_str = &s[..d_pos];
-                                                        let count: u32 = if count_str.is_empty() { 1 } else {
-                                                            count_str.parse().map_err(|_| "Nombre de dés invalide")?
-                                                        };
-                                                        if !(1..=100).contains(&count) { return Err("1 à 100 dés max".to_string()); }
-
-                                                        let rest = &s[d_pos+1..];
-                                                        // Split on + or -
-                                                        let (sides_str, modifier) = if let Some(pos) = rest.find('+') {
-                                                            (&rest[..pos], rest[pos+1..].parse::<i64>().map_err(|_| "Modificateur invalide")?)
-                                                        } else if let Some(pos) = rest[1..].find('-') {
-                                                            let pos = pos + 1; // offset because we started searching at index 1
-                                                            (&rest[..pos], -(rest[pos+1..].parse::<i64>().map_err(|_| "Modificateur invalide")?))
-                                                        } else {
-                                                            (rest, 0i64)
-                                                        };
-                                                        let sides: u32 = sides_str.parse().map_err(|_| "Nombre de faces invalide")?;
-                                                        if !(2..=1000).contains(&sides) { return Err("2 à 1000 faces".to_string()); }
-
-                                                        let mut rng = rand::thread_rng();
-                                                        let rolls: Vec<u32> = (0..count).map(|_| rng.gen_range(1..=sides)).collect();
-                                                        let sum: i64 = rolls.iter().map(|&r| r as i64).sum::<i64>() + modifier;
-
-                                                        if count == 1 && modifier == 0 {
-                                                            Ok(format!("🎲 d{} → [b]{}[/b]", sides, rolls[0]))
-                                                        } else if count <= 20 {
-                                                            let details: Vec<String> = rolls.iter().map(|r| r.to_string()).collect();
-                                                            let mod_str = if modifier > 0 { format!("+{}", modifier) } else if modifier < 0 { format!("{}", modifier) } else { String::new() };
-                                                            Ok(format!("🎲 {}d{}{} → ({}) = [b]{}[/b]", count, sides, mod_str, details.join("+"), sum))
-                                                        } else {
-                                                            let mod_str = if modifier > 0 { format!("+{}", modifier) } else if modifier < 0 { format!("{}", modifier) } else { String::new() };
-                                                            Ok(format!("🎲 {}d{}{} → [b]{}[/b]", count, sides, mod_str, sum))
-                                                        }
-                                                    })();
-
-                                                    let response = match result {
-                                                        Ok(s) => s,
-                                                        Err(e) => format!("❌ {}", e),
-                                                    };
-                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                        commands::roll_dice(&args), &reply_target, reply_sender_id
+                                                    ));
                                                 } else if msg_lower.starts_with("!8ball") || msg_lower.starts_with("!8b") || msg_lower.starts_with("!boule") {
-                                                    // Magic 8-ball
                                                     let question = if msg_lower.starts_with("!8ball") {
                                                         message.get(6..).unwrap_or("").trim()
                                                     } else if msg_lower.starts_with("!8b") {
@@ -1716,44 +1632,11 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         message.get(6..).unwrap_or("").trim()
                                                     };
-                                                    if question.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            "🎱 Pose une question ! (ex: !8ball Est-ce que je vais gagner ?)".to_string(),
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                    } else {
-                                                        let answers = [
-                                                            // Positives (8)
-                                                            "🟢 Oui, absolument.",
-                                                            "🟢 C'est certain.",
-                                                            "🟢 Sans aucun doute.",
-                                                            "🟢 Oui, définitivement.",
-                                                            "🟢 Tu peux compter dessus.",
-                                                            "🟢 Les signes disent oui.",
-                                                            "🟢 Très probablement.",
-                                                            "🟢 Les astres sont favorables.",
-                                                            // Neutral (4)
-                                                            "🟡 Réponse floue, repose ta question.",
-                                                            "🟡 Demande plus tard.",
-                                                            "🟡 Mieux vaut ne pas te dire maintenant.",
-                                                            "🟡 Je ne peux pas prédire ça.",
-                                                            // Negatives (8)
-                                                            "🔴 N'y compte pas.",
-                                                            "🔴 Ma réponse est non.",
-                                                            "🔴 Mes sources disent non.",
-                                                            "🔴 Les perspectives ne sont pas bonnes.",
-                                                            "🔴 Très douteux.",
-                                                            "🔴 Non.",
-                                                            "🔴 Clairement pas.",
-                                                            "🔴 Absolument pas.",
-                                                        ];
-                                                        let idx = rand::thread_rng().gen_range(0..answers.len());
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🎱 {} demande : \"{}\"\n{}", invoker.name, truncate_str(question, 150), answers[idx]),
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                        // Count as command for stats
-                                                    }
+                                                    let response = match commands::eight_ball(&invoker.name, question) {
+                                                        Some(s) => s,
+                                                        None => "🎱 Pose une question ! (ex: !8ball Est-ce que je vais gagner ?)".to_string(),
+                                                    };
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!roulette") {
                                                     // Russian roulette: 1/6 chance of channel kick
                                                     let chamber = rand::thread_rng().gen_range(1..=6);
@@ -2087,30 +1970,13 @@ async fn main() -> Result<()> {
                                                     }
                                                     drop(hist);
                                                 } else if msg_lower == "!ping" {
-                                                    // Respond with pong + uptime info (no TS3 command needed)
-                                                    let uptime_str = format_uptime(start_time.elapsed().as_secs(), true);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                        format!("🏓 Pong ! (uptime: {})", uptime_str),
+                                                        commands::ping_response(start_time.elapsed().as_secs()),
                                                         &reply_target, reply_sender_id
                                                     ));
                                                 } else if msg_lower == "!stats" {
-                                                    let uptime_str = format_uptime(start_time.elapsed().as_secs(), false);
-                                                    let msgs = bot_stats.messages_received.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let cmds = bot_stats.commands_executed.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let tts = bot_stats.tts_calls.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let transcriptions = bot_stats.voice_transcriptions.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let greets = bot_stats.greetings_sent.load(std::sync::atomic::Ordering::Relaxed);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                        format!(
-                                                            "📊 Statistiques Marlbot\n\
-                                                             • Uptime session : {}\n\
-                                                             • Messages reçus : {}\n\
-                                                             • Commandes exécutées : {}\n\
-                                                             • Appels TTS : {}\n\
-                                                             • Transcriptions vocales : {}\n\
-                                                             • Salutations envoyées : {}",
-                                                            uptime_str, msgs, cmds, tts, transcriptions, greets
-                                                        ),
+                                                        commands::stats_response(start_time.elapsed().as_secs(), &bot_stats),
                                                         &reply_target, reply_sender_id
                                                     ));
                                                 } else if msg_lower.starts_with("!seen") {

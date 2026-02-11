@@ -75,6 +75,18 @@ pub struct BotStats {
     pub greetings_sent: AtomicU64,
 }
 
+impl Default for BotStats {
+    fn default() -> Self {
+        Self {
+            messages_received: AtomicU64::new(0),
+            commands_executed: AtomicU64::new(0),
+            tts_calls: AtomicU64::new(0),
+            voice_transcriptions: AtomicU64::new(0),
+            greetings_sent: AtomicU64::new(0),
+        }
+    }
+}
+
 impl BotStats {
     /// Load stats from `data/stats.json`, or return zeroed stats.
     pub fn load() -> Self {
