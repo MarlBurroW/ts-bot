@@ -517,6 +517,29 @@ test_voice_command
 test_voice_set
 test_seen_command
 test_ping_command
+
+test_notify_command() {
+    sleep 2
+    # !notify shows help when no args
+    if sq_send_and_check "!notify" "notification" 5; then
+        log_pass "!notify shows notification info"
+    else
+        log_fail "!notify shows notification info" "no response"
+    fi
+}
+
+test_notify_add() {
+    sleep 2
+    # !notify someuser adds a watcher
+    if sq_send_and_check "!notify testuser" "notifi" 5; then
+        log_pass "!notify testuser adds/toggles notification"
+    else
+        log_fail "!notify testuser adds/toggles notification" "no response"
+    fi
+}
+
+test_notify_command
+test_notify_add
 test_bot_does_not_crash
 
 echo ""

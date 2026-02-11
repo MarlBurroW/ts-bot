@@ -246,6 +246,10 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(map))
     };
 
+    // Notify-on-connect watchers: lowercase_target_name -> Vec<(requester_name, requester_uid)>
+    // When a client connects whose lowercase name contains the key, poke all requesters
+    let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Spawn TS3 client connection task
     let mut ts3_handle = tokio::spawn(async move {
         info!("Starting TS3 client connection");
@@ -983,6 +987,7 @@ async fn main() -> Result<()> {
                                                          • [b]!quote[/b] [add|list|count|del] — livre de quotes mémorables\n\
                                                          • [b]!history[/b] [N] — derniers messages (défaut 10, max 50)\n\
                                                          • [b]!seen[/b] <nom> — quand un utilisateur a été vu pour la dernière fois\n\
+                                                         • [b]!notify[/b] [nom|clear] — être notifié (poke) quand quelqu'un se connecte\n\
                                                          • [b]!ping[/b] — latence vers le serveur TS3\n\
                                                          • [b]!status[/b] — afficher l'état du bot\n\
                                                          • [b]!help[/b] — afficher cette aide".to_string(),
@@ -1673,6 +1678,67 @@ async fn main() -> Result<()> {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                     }
                                                     drop(seen);
+                                                } else if msg_lower.starts_with("!notify") {
+                                                    let arg = message.get(7..).unwrap_or("").trim();
+                                                    let mut watchers = notify_watchers.lock().await;
+                                                    if arg.is_empty() {
+                                                        // Show current watches for this user
+                                                        let sender_uid_str = sender_uid.clone();
+                                                        let my_watches: Vec<String> = watchers.iter()
+                                                            .filter(|(_, v)| v.iter().any(|(_, uid)| uid == &sender_uid_str))
+                                                            .map(|(target, _)| target.clone())
+                                                            .collect();
+                                                        if my_watches.is_empty() {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                "🔔 Aucune notification active.\n!notify <nom> — être notifié quand quelqu'un se connecte\n!notify clear — tout supprimer".to_string(),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        } else {
+                                                            let list = my_watches.iter().map(|n| format!("• {}", n)).collect::<Vec<_>>().join("\n");
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("🔔 Tes notifications actives :\n{}\n!notify clear pour tout supprimer", list),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    } else if arg.eq_ignore_ascii_case("clear") {
+                                                        let sender_uid_str = sender_uid.clone();
+                                                        let mut removed = 0;
+                                                        watchers.retain(|_, v| {
+                                                            let before = v.len();
+                                                            v.retain(|(_, uid)| uid != &sender_uid_str);
+                                                            removed += before - v.len();
+                                                            !v.is_empty()
+                                                        });
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🔕 {} notification(s) supprimée(s)", removed),
+                                                            &reply_target, reply_sender_id
+                                                        ));
+                                                    } else {
+                                                        let target_lower = arg.to_lowercase();
+                                                        let sender_uid_str = sender_uid.clone();
+                                                        let sender_name_str = invoker.name.to_string();
+                                                        // Check if already watching this target
+                                                        let entry = watchers.entry(target_lower.clone()).or_insert_with(Vec::new);
+                                                        if entry.iter().any(|(_, uid)| uid == &sender_uid_str) {
+                                                            // Remove the watch (toggle off)
+                                                            entry.retain(|(_, uid)| uid != &sender_uid_str);
+                                                            if entry.is_empty() {
+                                                                let _ = entry;
+                                                                watchers.remove(&target_lower);
+                                                            }
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("🔕 Notification pour \"{}\" désactivée", arg),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        } else {
+                                                            entry.push((sender_name_str, sender_uid_str));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                format!("🔔 Tu seras notifié quand \"{}\" se connecte ! (!notify {} pour annuler)", arg, arg),
+                                                                &reply_target, reply_sender_id
+                                                            ));
+                                                        }
+                                                    }
+                                                    drop(watchers);
                                                 } else if msg_lower.starts_with("!lang") {
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 || parts[1] == "auto" {
@@ -1882,6 +1948,8 @@ async fn main() -> Result<()> {
                                                     let client_id_u64 = client_id.0 as u64;
                                                     let mut sender = ts3_sender.clone();
                                                     let tx = event_tx_clone.clone();
+                                                    let notify_watchers_clone = notify_watchers.clone();
+                                                    let mut sender_for_poke = ts3_sender.clone();
                                                     tokio::spawn(async move {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
@@ -1896,11 +1964,59 @@ async fn main() -> Result<()> {
                                                             info!("Client connected: {} (id: {}, uid: {:?})", name, client_id_u64, uid);
                                                             let _ = tx.send(WebSocketEvent::ClientConnected {
                                                                 client_id: client_id_u64,
-                                                                client_name: name,
+                                                                client_name: name.clone(),
                                                                 channel_id,
                                                                 uid,
                                                                 country_code,
                                                             });
+
+                                                            // Check notify watchers
+                                                            let name_lower = name.to_lowercase();
+                                                            let watchers = notify_watchers_clone.lock().await;
+                                                            let mut to_poke: Vec<(String, String)> = Vec::new(); // (requester_name, requester_uid)
+                                                            for (target, requesters) in watchers.iter() {
+                                                                if name_lower.contains(target) {
+                                                                    for r in requesters {
+                                                                        to_poke.push(r.clone());
+                                                                    }
+                                                                }
+                                                            }
+                                                            drop(watchers);
+
+                                                            if !to_poke.is_empty() {
+                                                                // Find requester client IDs from current state
+                                                                let poke_targets = sender_for_poke.with_connection(move |con| {
+                                                                    con.get_state().ok().map(|state| {
+                                                                        let mut targets = Vec::new();
+                                                                        for (_, client) in &state.clients {
+                                                                            let cuid = client.uid.as_ref().map(|u| base64::encode(&u.0));
+                                                                            if let Some(ref cuid_str) = cuid {
+                                                                                for (_, req_uid) in &to_poke {
+                                                                                    if cuid_str == req_uid {
+                                                                                        targets.push(client.id.0 as u16);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        targets
+                                                                    }).unwrap_or_default()
+                                                                }).await;
+
+                                                                if let Ok(targets) = poke_targets {
+                                                                    for clid in targets {
+                                                                        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientpoke");
+                                                                        cmd.write_arg("clid", &clid);
+                                                                        let msg = format!("🔔 {} vient de se connecter !", name);
+                                                                        cmd.write_arg("msg", &msg);
+                                                                        if let Err(e) = sender_for_poke.send_command(cmd).await {
+                                                                            warn!("Failed to poke for notify: {:?}", e);
+                                                                        } else {
+                                                                            info!("Notified (poke) about {} connecting", name);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     });
                                                 }
