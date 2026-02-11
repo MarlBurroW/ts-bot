@@ -151,10 +151,10 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             CommandAction::PokeClient { command_id, client_id, message: message.unwrap_or_default() },
         ),
         WebSocketCommand::KickClient { command_id, client_id, reason, kick_type } => {
-            // reason_id: 5 = kick from channel, 4 = kick from server
+            // TS3 protocol: reasonid=4 = kick from channel, reasonid=5 = kick from server
             let reason_id = match kick_type.as_deref() {
-                Some("channel") => 5u8,
-                _ => 4u8, // default to server kick
+                Some("channel") => 4u8,
+                _ => 5u8, // default to server kick
             };
             (
                 WebSocketEvent::command_success(command_id.clone(), Some("Kicking client...".to_string())),

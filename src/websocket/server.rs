@@ -563,7 +563,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     cmd.write_arg("reasonmsg", &reason);
                                 }
 
-                                let kick_type_str = if reason_id == 5 { "channel" } else { "server" };
+                                let kick_type_str = if reason_id == 4 { "channel" } else { "server" };
                                 match sender.send_command(cmd).await {
                                     Ok(()) => {
                                         info!("Kicked client {} from {} (reason: {})", client_id, kick_type_str, &reason[..reason.len().min(60)]);
