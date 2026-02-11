@@ -318,6 +318,37 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 ));
                             }
                         }
+                        CommandAction::SetTimeout { command_id, timeout_ms } => {
+                            if let Some(ref bm) = state.buffer_manager {
+                                let mut bm = bm.lock().await;
+                                bm.set_silence_timeout_ms(timeout_ms);
+                                info!("Silence timeout set to {}ms via WebSocket", timeout_ms);
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(format!("Silence timeout set to {}ms", timeout_ms)),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "Buffer manager not available".to_string(),
+                                ));
+                            }
+                        }
+                        CommandAction::GetTimeout { command_id } => {
+                            if let Some(ref bm) = state.buffer_manager {
+                                let bm = bm.lock().await;
+                                let timeout = bm.silence_timeout_ms();
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(serde_json::json!({ "timeout_ms": timeout }).to_string()),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(serde_json::json!({ "timeout_ms": 2000 }).to_string()),
+                                ));
+                            }
+                        }
                         CommandAction::GetServerState { command_id } => {
                             let mut handle_guard = ts3_handle.lock().await;
                             if let Some(ref mut sender) = *handle_guard {

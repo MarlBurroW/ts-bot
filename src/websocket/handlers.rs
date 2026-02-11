@@ -87,6 +87,15 @@ pub enum CommandAction {
         command_id: Option<String>,
         count: u32,
     },
+    /// Set silence detection timeout (ms)
+    SetTimeout {
+        command_id: Option<String>,
+        timeout_ms: u64,
+    },
+    /// Get current silence detection timeout
+    GetTimeout {
+        command_id: Option<String>,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -211,5 +220,13 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
                 CommandAction::GetHistory { command_id, count },
             )
         }
+        WebSocketCommand::SetTimeout { command_id, timeout_ms } => (
+            WebSocketEvent::command_success(command_id.clone(), Some(format!("Timeout set to {}ms", timeout_ms))),
+            CommandAction::SetTimeout { command_id, timeout_ms },
+        ),
+        WebSocketCommand::GetTimeout { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetTimeout { command_id },
+        ),
     }
 }
