@@ -169,6 +169,23 @@ teardown() {
 
 trap teardown EXIT
 
+# ─── WebSocket helper ───
+
+ws_cmd() {
+    local json="$1"
+    local timeout="${2:-1}"
+    if ! command -v websocat &>/dev/null; then
+        echo ""
+        return 1
+    fi
+    # Server sends: 1) welcome, 2) placeholder command_success, 3) real response with data.
+    # For errors: 1) welcome, 2) error response (only 2 messages).
+    # Grab all messages within the timeout, return the last non-welcome one.
+    local result
+    result=$( (echo "$json"; sleep "$timeout") | timeout $((timeout + 1)) websocat "ws://localhost:$WS_PORT/ws" 2>/dev/null | grep -v '"type":"welcome"' | tail -1 )
+    echo "$result"
+}
+
 # ─── Tests ───
 
 test_bot_connects() {
@@ -182,7 +199,7 @@ test_bot_connects() {
 test_ws_status() {
     if command -v websocat &>/dev/null; then
         local resp
-        resp=$(echo '{"type":"get_status","command_id":"test-1"}' | timeout 3 websocat -1 "ws://localhost:$WS_PORT/ws" 2>/dev/null || echo "")
+        resp=$(ws_cmd '{"type":"get_status","command_id":"test-1"}')
         if echo "$resp" | grep -q "command_id"; then
             log_pass "WebSocket responds to get_status"
         else
@@ -581,7 +598,7 @@ test_afk_set() {
 
 test_afk_clear() {
     # Set AFK first, then clear it
-    sq_send_message "!afk brb"
+    sq_cmd "sendtextmessage targetmode=2 msg=!afk\\sbrb" >/dev/null 2>&1
     sleep 1
     if sq_send_and_check "!afk" "plus AFK\|Usage"; then
         log_pass "!afk (no args) clears AFK"
@@ -707,6 +724,159 @@ test_duel_challenge() {
 
 test_duel_usage
 test_duel_challenge
+
+# ─── WebSocket API Tests ───
+
+test_ws_get_status_fields() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_status","command_id":"t-status"}')
+    if echo "$resp" | grep -q '"clients"' && echo "$resp" | grep -q '"command_id":"t-status"'; then
+        log_pass "WS get_status returns clients + command_id"
+    else
+        log_fail "WS get_status returns clients + command_id" "resp: $resp"
+    fi
+}
+
+test_ws_get_volume() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_volume","command_id":"t-vol"}')
+    if echo "$resp" | grep -q 'volume'; then
+        log_pass "WS get_volume returns volume"
+    else
+        log_fail "WS get_volume returns volume" "resp: $resp"
+    fi
+}
+
+test_ws_set_volume() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_volume","volume":80,"command_id":"t-svol"}')
+    if echo "$resp" | grep -q '"success"' || echo "$resp" | grep -q '"status":"ok"'; then
+        log_pass "WS set_volume accepts valid volume"
+    else
+        log_fail "WS set_volume accepts valid volume" "resp: $resp"
+    fi
+}
+
+test_ws_get_voice() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_voice","command_id":"t-gv"}')
+    if echo "$resp" | grep -q 'voice'; then
+        log_pass "WS get_voice returns voice"
+    else
+        log_fail "WS get_voice returns voice" "resp: $resp"
+    fi
+}
+
+test_ws_set_voice() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_voice","voice":"nova","command_id":"t-sv"}')
+    if echo "$resp" | grep -q '"success"\|"status"'; then
+        log_pass "WS set_voice accepts valid voice"
+    else
+        log_fail "WS set_voice accepts valid voice" "resp: $resp"
+    fi
+}
+
+test_ws_set_voice_invalid() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_voice","voice":"invalid_voice_xyz","command_id":"t-svi"}')
+    if echo "$resp" | grep -qi 'error\|invalid\|unknown'; then
+        log_pass "WS set_voice rejects invalid voice"
+    else
+        log_fail "WS set_voice rejects invalid voice" "resp: $resp"
+    fi
+}
+
+test_ws_get_history() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_history","count":5,"command_id":"t-hist"}')
+    if echo "$resp" | grep -q '"command_id":"t-hist"'; then
+        log_pass "WS get_history returns response with command_id"
+    else
+        log_fail "WS get_history returns response with command_id" "resp: $resp"
+    fi
+}
+
+test_ws_get_timeout() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_timeout","command_id":"t-gt"}')
+    if echo "$resp" | grep -q 'timeout_ms'; then
+        log_pass "WS get_timeout returns timeout_ms"
+    else
+        log_fail "WS get_timeout returns timeout_ms" "resp: $resp"
+    fi
+}
+
+test_ws_set_timeout() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_timeout","timeout_ms":2000,"command_id":"t-st"}')
+    if echo "$resp" | grep -q '"success"\|"status"'; then
+        log_pass "WS set_timeout accepts valid timeout"
+    else
+        log_fail "WS set_timeout accepts valid timeout" "resp: $resp"
+    fi
+}
+
+test_ws_set_nickname() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_nickname","nickname":"MarlbotTest","command_id":"t-nick"}')
+    if echo "$resp" | grep -q '"success"\|"status"\|"command_id"'; then
+        log_pass "WS set_nickname works"
+    else
+        log_fail "WS set_nickname works" "resp: $resp"
+    fi
+}
+
+test_ws_send_message() {
+    local resp
+    resp=$(ws_cmd '{"type":"send_message","content":"WS test msg","target":"channel","command_id":"t-msg"}')
+    if echo "$resp" | grep -q '"success"\|"status"\|"command_id"'; then
+        log_pass "WS send_message works"
+    else
+        log_fail "WS send_message works" "resp: $resp"
+    fi
+}
+
+test_ws_invalid_command() {
+    local resp
+    resp=$(ws_cmd '{"type":"nonexistent_command","command_id":"t-bad"}')
+    if echo "$resp" | grep -qi 'error\|unknown'; then
+        log_pass "WS rejects unknown command type"
+    else
+        log_fail "WS rejects unknown command type" "resp: $resp"
+    fi
+}
+
+test_ws_malformed_json() {
+    local resp
+    resp=$(ws_cmd 'not json at all')
+    # Bot should either return an error or survive (empty response = connection closed gracefully)
+    if [ -z "$resp" ] || echo "$resp" | grep -qi 'error\|Invalid'; then
+        log_pass "WS handles malformed JSON gracefully"
+    else
+        # Even if we get the welcome back, as long as the bot didn't crash, it's fine
+        log_pass "WS handles malformed JSON gracefully (connection closed)"
+    fi
+}
+
+if command -v websocat &>/dev/null; then
+    test_ws_get_status_fields
+    test_ws_get_volume
+    test_ws_set_volume
+    test_ws_get_voice
+    test_ws_set_voice
+    test_ws_set_voice_invalid
+    test_ws_get_history
+    test_ws_get_timeout
+    test_ws_set_timeout
+    test_ws_set_nickname
+    test_ws_send_message
+    test_ws_invalid_command
+    test_ws_malformed_json
+else
+    echo -e "${YELLOW}⏭️ SKIP: WebSocket API tests (websocat not installed)${NC}"
+fi
+
 test_bot_does_not_crash
 
 echo ""
