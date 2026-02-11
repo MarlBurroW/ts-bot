@@ -73,6 +73,15 @@ pub enum CommandAction {
     GetVolume {
         command_id: Option<String>,
     },
+    /// Set default TTS voice
+    SetVoice {
+        command_id: Option<String>,
+        voice: String,
+    },
+    /// Get current default TTS voice
+    GetVoice {
+        command_id: Option<String>,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -181,6 +190,14 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::GetVolume { command_id } => (
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetVolume { command_id },
+        ),
+        WebSocketCommand::SetVoice { command_id, voice } => (
+            WebSocketEvent::command_success(command_id.clone(), Some(format!("Voice set to '{}'", voice))),
+            CommandAction::SetVoice { command_id, voice },
+        ),
+        WebSocketCommand::GetVoice { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetVoice { command_id },
         ),
     }
 }

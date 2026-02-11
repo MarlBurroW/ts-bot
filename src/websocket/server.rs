@@ -18,6 +18,20 @@ use crate::models::{BotConfig, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
 
+/// Persist default voice to bot_state.json (read-modify-write)
+fn save_voice_to_bot_state(voice: &str) {
+    let _ = std::fs::create_dir_all("data");
+    // Read existing state
+    let mut state: serde_json::Value = std::fs::read_to_string("data/bot_state.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    state["voice"] = serde_json::Value::String(voice.to_string());
+    if let Ok(json) = serde_json::to_string_pretty(&state) {
+        let _ = std::fs::write("data/bot_state.json", json);
+    }
+}
+
 /// Persist language preferences to disk (WS server context)
 fn save_language_prefs_ws(overrides: &HashMap<String, String>) {
     let _ = std::fs::create_dir_all("data");
@@ -62,6 +76,8 @@ struct AppState {
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
     /// Shared TTS volume level (0-200, 100 = normal)
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
+    /// Shared default TTS voice (runtime-adjustable)
+    default_voice: Option<Arc<std::sync::RwLock<String>>>,
 }
 
 /// Run the WebSocket server
@@ -77,6 +93,7 @@ pub async fn run_server(
     buffer_manager: Option<Arc<tokio::sync::Mutex<SpeakerBufferManager>>>,
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
+    default_voice: Option<Arc<std::sync::RwLock<String>>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -92,6 +109,7 @@ pub async fn run_server(
         buffer_manager,
         language_overrides,
         tts_volume,
+        default_voice,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -166,6 +184,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let tts_tx = state.tts_tx.clone();
     let tts_stop_flag = state.tts_stop_flag.clone();
     let tts_volume = state.tts_volume.clone();
+    let default_voice = state.default_voice.clone();
     let ts3_handle = state.ts3_handle.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
@@ -236,6 +255,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             let _ = event_tx.send(WebSocketEvent::command_success(
                                 command_id,
                                 Some(serde_json::json!({ "volume": vol }).to_string()),
+                            ));
+                        }
+                        CommandAction::SetVoice { command_id, voice } => {
+                            if let Some(ref dv) = default_voice {
+                                *dv.write().unwrap() = voice.clone();
+                                save_voice_to_bot_state(&voice);
+                                info!("Default TTS voice set to '{}' via WebSocket", voice);
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(format!("Default voice set to '{}'", voice)),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "TTS not enabled".to_string(),
+                                ));
+                            }
+                        }
+                        CommandAction::GetVoice { command_id } => {
+                            let voice = default_voice.as_ref()
+                                .map(|dv| dv.read().unwrap().clone())
+                                .unwrap_or_else(|| "onyx".to_string());
+                            let _ = event_tx.send(WebSocketEvent::command_success(
+                                command_id,
+                                Some(serde_json::json!({ "voice": voice }).to_string()),
                             ));
                         }
                         CommandAction::GetServerState { command_id } => {

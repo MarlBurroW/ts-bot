@@ -207,6 +207,7 @@ async fn main() -> Result<()> {
         persisted_voice.unwrap_or_else(|| config.tts_voice.clone())
     ));
     let default_voice_for_tts = default_voice.clone();
+    let default_voice_for_ws = Some(default_voice.clone());
 
     // Last spoken text for !replay (text, voice, speed)
     let last_spoken: Arc<Mutex<Option<(String, Option<String>, Option<f32>)>>> = Arc::new(Mutex::new(None));
@@ -2055,7 +2056,7 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws, default_voice_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });
