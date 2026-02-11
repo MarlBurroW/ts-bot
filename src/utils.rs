@@ -17,6 +17,32 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Format an uptime duration (seconds) into a compact human-readable string.
+///
+/// - `detailed=true`: includes seconds for short uptimes (e.g. "2m 34s")
+/// - `detailed=false`: omits seconds (e.g. "2m"), suitable for stats display
+pub fn format_uptime(secs: u64, detailed: bool) -> String {
+    if detailed {
+        if secs < 60 {
+            format!("{}s", secs)
+        } else if secs < 3600 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else if secs < 86400 {
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        } else {
+            format!("{}j {}h {}m", secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60)
+        }
+    } else {
+        if secs < 3600 {
+            format!("{}m", secs / 60)
+        } else if secs < 86400 {
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        } else {
+            format!("{}j {}h", secs / 86400, (secs % 86400) / 3600)
+        }
+    }
+}
+
 /// Parse a duration string like "30m", "2h", "1h30m", "90s", "1d", "1j" into milliseconds.
 /// Bare number without unit is treated as minutes.
 pub fn parse_duration_str(s: &str) -> Option<u64> {
@@ -189,6 +215,21 @@ mod tests {
         assert_eq!(parse_duration_str("1j"), Some(86400 * 1000));
         assert_eq!(parse_duration_str("5"), Some(5 * 60 * 1000)); // bare = minutes
         assert_eq!(parse_duration_str(""), None);
+    }
+
+    #[test]
+    fn test_format_uptime_detailed() {
+        assert_eq!(format_uptime(45, true), "45s");
+        assert_eq!(format_uptime(150, true), "2m 30s");
+        assert_eq!(format_uptime(3661, true), "1h 1m");
+        assert_eq!(format_uptime(90061, true), "1j 1h 1m");
+    }
+
+    #[test]
+    fn test_format_uptime_compact() {
+        assert_eq!(format_uptime(150, false), "2m");
+        assert_eq!(format_uptime(3661, false), "1h 1m");
+        assert_eq!(format_uptime(90000, false), "1j 1h");
     }
 
     #[test]

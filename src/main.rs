@@ -2,8 +2,9 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, Reminder};
-use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
+use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
 use ts3_bot::websocket;
+use rand::Rng;
 use ts3_bot::websocket::TtsRequest;
 use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, TtsSynthesizer};
 use tracing::{error, info, warn, debug};
@@ -1165,16 +1166,7 @@ async fn main() -> Result<()> {
                                                     let speak_str = if speaking { "Oui 🔊" } else { "Non" };
 
                                                     let uptime = start_time.elapsed();
-                                                    let uptime_secs = uptime.as_secs();
-                                                    let uptime_str = if uptime_secs < 60 {
-                                                        format!("{}s", uptime_secs)
-                                                    } else if uptime_secs < 3600 {
-                                                        format!("{}m {}s", uptime_secs / 60, uptime_secs % 60)
-                                                    } else if uptime_secs < 86400 {
-                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
-                                                    } else {
-                                                        format!("{}j {}h {}m", uptime_secs / 86400, (uptime_secs % 86400) / 3600, (uptime_secs % 3600) / 60)
-                                                    };
+                                                    let uptime_str = format_uptime(uptime.as_secs(), true);
 
                                                     let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
                                                     let is_muted = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
@@ -1726,7 +1718,6 @@ async fn main() -> Result<()> {
                                                         // Check for simple number (e.g., !roll 20 = random 1-20)
                                                         if let Ok(max) = s.parse::<i64>() {
                                                             if max < 1 || max > 1000000 { return Err("Nombre entre 1 et 1000000 svp".to_string()); }
-                                                            use rand::Rng;
                                                             let val = rand::thread_rng().gen_range(1..=max);
                                                             return Ok(format!("🎲 1-{} → [b]{}[/b]", max, val));
                                                         }
@@ -1752,7 +1743,6 @@ async fn main() -> Result<()> {
                                                         let sides: u32 = sides_str.parse().map_err(|_| "Nombre de faces invalide")?;
                                                         if sides < 2 || sides > 1000 { return Err("2 à 1000 faces".to_string()); }
 
-                                                        use rand::Rng;
                                                         let mut rng = rand::thread_rng();
                                                         let rolls: Vec<u32> = (0..count).map(|_| rng.gen_range(1..=sides)).collect();
                                                         let sum: i64 = rolls.iter().map(|&r| r as i64).sum::<i64>() + modifier;
@@ -1814,7 +1804,6 @@ async fn main() -> Result<()> {
                                                             "🔴 Clairement pas.",
                                                             "🔴 Absolument pas.",
                                                         ];
-                                                        use rand::Rng;
                                                         let idx = rand::thread_rng().gen_range(0..answers.len());
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                             format!("🎱 {} demande : \"{}\"\n{}", invoker.name, truncate_str(question, 150), answers[idx]),
@@ -1824,7 +1813,6 @@ async fn main() -> Result<()> {
                                                     }
                                                 } else if msg_lower.starts_with("!roulette") {
                                                     // Russian roulette: 1/6 chance of channel kick
-                                                    use rand::Rng;
                                                     let chamber = rand::thread_rng().gen_range(1..=6);
                                                     let name = invoker.name.clone();
 
@@ -1885,7 +1873,6 @@ async fn main() -> Result<()> {
                                                                     &reply_target, reply_sender_id
                                                                 ));
                                                             } else {
-                                                                use rand::Rng;
                                                                 let challenger_name = duel.challenger_name.clone();
                                                                 let target_name = duel.target_name.clone();
                                                                 let challenger_clid = duel.challenger_clid;
@@ -2129,7 +2116,6 @@ async fn main() -> Result<()> {
                                                         if quotes.is_empty() {
                                                             "📖 Aucune quote sauvegardée. Utilise [b]!quote add <texte>[/b]".to_string()
                                                         } else {
-                                                            use rand::Rng;
                                                             let idx = rand::thread_rng().gen_range(0..quotes.len());
                                                             let q = &quotes[idx];
                                                             let text = q.get("text").and_then(|v| v.as_str()).unwrap_or("?");
@@ -2163,29 +2149,13 @@ async fn main() -> Result<()> {
                                                     drop(hist);
                                                 } else if msg_lower == "!ping" {
                                                     // Respond with pong + uptime info (no TS3 command needed)
-                                                    let uptime = start_time.elapsed();
-                                                    let uptime_secs = uptime.as_secs();
-                                                    let uptime_str = if uptime_secs < 60 {
-                                                        format!("{}s", uptime_secs)
-                                                    } else if uptime_secs < 3600 {
-                                                        format!("{}m {}s", uptime_secs / 60, uptime_secs % 60)
-                                                    } else {
-                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
-                                                    };
+                                                    let uptime_str = format_uptime(start_time.elapsed().as_secs(), true);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         format!("🏓 Pong ! (uptime: {})", uptime_str),
                                                         &reply_target, reply_sender_id
                                                     ));
                                                 } else if msg_lower == "!stats" {
-                                                    let uptime = start_time.elapsed();
-                                                    let uptime_secs = uptime.as_secs();
-                                                    let uptime_str = if uptime_secs < 3600 {
-                                                        format!("{}m", uptime_secs / 60)
-                                                    } else if uptime_secs < 86400 {
-                                                        format!("{}h {}m", uptime_secs / 3600, (uptime_secs % 3600) / 60)
-                                                    } else {
-                                                        format!("{}j {}h", uptime_secs / 86400, (uptime_secs % 86400) / 3600)
-                                                    };
+                                                    let uptime_str = format_uptime(start_time.elapsed().as_secs(), false);
                                                     let msgs = bot_stats.messages_received.load(std::sync::atomic::Ordering::Relaxed);
                                                     let cmds = bot_stats.commands_executed.load(std::sync::atomic::Ordering::Relaxed);
                                                     let tts = bot_stats.tts_calls.load(std::sync::atomic::Ordering::Relaxed);
