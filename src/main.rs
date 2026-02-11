@@ -526,57 +526,83 @@ async fn main() -> Result<()> {
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
-                            // Save for !replay
-                            {
-                                let mut ls = last_spoken_ws.lock().await;
-                                *ls = Some((request.text.clone(), request.voice.clone(), request.speed));
-                            }
-                            // Echo TTS text to TS3 channel chat so muted users can read it
-                            let display_text = if request.text.len() > 300 {
-                                format!("🤖 {}...", truncate_str(&request.text, 300))
-                            } else {
-                                format!("🤖 {}", request.text)
-                            };
-                            let _ = tts_chat_tx.try_send(OutgoingMessage::channel(display_text));
 
-                            // Record bot response to chat history
-                            {
-                                let mut hist = tts_chat_history.lock().await;
-                                let ts = chrono::Utc::now().format("%H:%M").to_string();
-                                let truncated = if request.text.len() > 200 {
-                                    format!("{}...", truncate_str(&request.text, 200))
-                                } else {
-                                    request.text.clone()
-                                };
-                                hist.push_back((ts, "🤖 Marlbot".to_string(), truncated));
-                                if hist.len() > 50 { hist.pop_front(); }
-                            }
+                            // Clone all state needed by the sub-task
+                            let last_spoken_sub = last_spoken_ws.clone();
+                            let tts_chat_tx_sub = tts_chat_tx.clone();
+                            let tts_chat_history_sub = tts_chat_history.clone();
+                            let tts_muted_sub = tts_muted_clone.clone();
+                            let tts_event_tx_sub = tts_event_tx.clone();
+                            let default_voice_sub = default_voice_for_tts.clone();
+                            let player_sub = player_clone.clone();
+                            let synth_sub = synth_clone.clone();
 
-                            // If TTS is muted, skip speech but still emit events
-                            if tts_muted_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                                info!("TTS muted — skipping speech for: '{}'", &request.text[..request.text.len().min(50)]);
-                                let _ = tts_event_tx.send(WebSocketEvent::speak_completed(request.text, 0));
-                                continue;
-                            }
-
-                            // Emit speak_started event
-                            let _ = tts_event_tx.send(WebSocketEvent::speak_started(request.text.clone()));
-                            let start = std::time::Instant::now();
-                            // Use default voice override if no explicit voice in request
-                            let effective_voice = request.voice.or_else(|| {
-                                Some(default_voice_for_tts.read().unwrap().clone())
-                            });
-                            let speak_result = player_clone
-                                .speak(request.text.clone(), effective_voice, request.speed, synth_clone.clone())
-                                .await;
-                            let duration_ms = start.elapsed().as_millis() as u64;
-                            match speak_result {
-                                Ok(_) => {
-                                    let _ = tts_event_tx.send(WebSocketEvent::speak_completed(request.text, duration_ms));
+                            // Spawn each TTS request as a sub-task for panic isolation.
+                            // If the sub-task panics, the JoinHandle returns Err instead of
+                            // killing this receiver loop (which would close the channel and
+                            // permanently break ALL TTS — see UTF-8 panic incident 2026-02-10).
+                            let handle = tokio::spawn(async move {
+                                // Save for !replay
+                                {
+                                    let mut ls = last_spoken_sub.lock().await;
+                                    *ls = Some((request.text.clone(), request.voice.clone(), request.speed));
                                 }
+                                // Echo TTS text to TS3 channel chat so muted users can read it
+                                let display_text = if request.text.len() > 300 {
+                                    format!("🤖 {}...", truncate_str(&request.text, 300))
+                                } else {
+                                    format!("🤖 {}", request.text)
+                                };
+                                let _ = tts_chat_tx_sub.try_send(OutgoingMessage::channel(display_text));
+
+                                // Record bot response to chat history
+                                {
+                                    let mut hist = tts_chat_history_sub.lock().await;
+                                    let ts = chrono::Utc::now().format("%H:%M").to_string();
+                                    let truncated = if request.text.len() > 200 {
+                                        format!("{}...", truncate_str(&request.text, 200))
+                                    } else {
+                                        request.text.clone()
+                                    };
+                                    hist.push_back((ts, "🤖 Marlbot".to_string(), truncated));
+                                    if hist.len() > 50 { hist.pop_front(); }
+                                }
+
+                                // If TTS is muted, skip speech but still emit events
+                                if tts_muted_sub.load(std::sync::atomic::Ordering::Relaxed) {
+                                    info!("TTS muted — skipping speech for: '{}'", truncate_str(&request.text, 50));
+                                    let _ = tts_event_tx_sub.send(WebSocketEvent::speak_completed(request.text, 0));
+                                    return;
+                                }
+
+                                // Emit speak_started event
+                                let _ = tts_event_tx_sub.send(WebSocketEvent::speak_started(request.text.clone()));
+                                let start = std::time::Instant::now();
+                                // Use default voice override if no explicit voice in request
+                                let effective_voice = request.voice.or_else(|| {
+                                    Some(default_voice_sub.read().unwrap().clone())
+                                });
+                                let speak_result = player_sub
+                                    .speak(request.text.clone(), effective_voice, request.speed, synth_sub.clone())
+                                    .await;
+                                let duration_ms = start.elapsed().as_millis() as u64;
+                                match speak_result {
+                                    Ok(_) => {
+                                        let _ = tts_event_tx_sub.send(WebSocketEvent::speak_completed(request.text, duration_ms));
+                                    }
+                                    Err(e) => {
+                                        warn!("TTS speak failed: {}", e);
+                                        let _ = tts_event_tx_sub.send(WebSocketEvent::speak_failed(request.text, duration_ms, format!("{}", e)));
+                                    }
+                                }
+                            });
+
+                            // Await the sub-task — if it panicked, log and continue
+                            // (the receiver loop stays alive for the next request)
+                            match handle.await {
+                                Ok(()) => {},
                                 Err(e) => {
-                                    warn!("TTS speak failed: {}", e);
-                                    let _ = tts_event_tx.send(WebSocketEvent::speak_failed(request.text, duration_ms, format!("{}", e)));
+                                    error!("TTS sub-task panicked: {:?} — receiver loop continues", e);
                                 }
                             }
                         }
