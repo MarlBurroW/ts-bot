@@ -198,7 +198,8 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Channel for TTS requests from WebSocket → TTS processing task
-    let (tts_tx, mut tts_rx) = tokio::sync::mpsc::channel::<TtsRequest>(10);
+    let (tts_tx, tts_rx) = tokio::sync::mpsc::channel::<TtsRequest>(10);
+    let mut tts_rx_opt: Option<tokio::sync::mpsc::Receiver<TtsRequest>> = Some(tts_rx);
 
     // Shared TS3 connection handle (populated once TS3 connects)
     let shared_ts3_handle: websocket::SharedTs3Handle =
@@ -513,11 +514,16 @@ async fn main() -> Result<()> {
             }
         };
 
-        // Attempt connection with retry loop (uses reconnect_* config)
+        // Reconnection config
         let max_attempts = config.reconnect_max_attempts;
         let initial_delay_ms = config.reconnect_initial_delay_ms;
         let max_delay_ms = config.reconnect_max_delay_ms;
+        let mut reconnect_count: u32 = 0;
 
+        // Outer reconnection loop — reconnects on unexpected TS3 disconnects
+        'reconnect: loop {
+
+        // Attempt connection with retry loop (uses reconnect_* config)
         let mut connection_opt = None;
         for attempt in 1..=max_attempts {
             match ts3_client.connect().await {
@@ -537,8 +543,30 @@ async fn main() -> Result<()> {
             }
         }
 
-        if let Some(connection) = connection_opt {
-                info!("TS3 client connected successfully");
+        let connection = match connection_opt {
+            Some(c) => c,
+            None => {
+                if reconnect_count > 0 {
+                    // During reconnection, wait and retry the outer loop
+                    let delay_ms = (initial_delay_ms * 2u64.saturating_pow(reconnect_count.min(10) - 1)).min(max_delay_ms);
+                    warn!("Reconnection cycle {} failed after {} attempts. Retrying in {}ms...", reconnect_count, max_attempts, delay_ms);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    reconnect_count += 1;
+                    continue 'reconnect;
+                } else {
+                    error!("Initial connection failed after {} attempts. Exiting.", max_attempts);
+                    return;
+                }
+            }
+        };
+
+        {
+                if reconnect_count > 0 {
+                    info!("🔄 TS3 reconnected successfully (attempt #{})", reconnect_count);
+                    reconnect_count = 0; // Reset on successful connection
+                } else {
+                    info!("TS3 client connected successfully");
+                }
 
                 // Convert to SyncConnection for bidirectional communication
                 let sync_con = SyncConnection::from(connection);
@@ -585,7 +613,7 @@ async fn main() -> Result<()> {
                 }
 
                 // Rebind as mutable for use in select! loop
-                let mut shutdown_rx = shutdown_rx;
+                let mut shutdown_rx = shutdown_rx.clone();
 
                 info!("Starting event loop to keep connection alive");
 
@@ -857,6 +885,8 @@ async fn main() -> Result<()> {
                 };
 
                 // Spawn TTS processing task (receives requests from WebSocket)
+                // Only spawn once (first connection) — tts_rx is consumed by move
+                if let Some(tts_rx_taken) = tts_rx_opt.take() {
                 if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                     let player_clone = player.clone();
                     let synth_clone = synth.clone();
@@ -866,6 +896,8 @@ async fn main() -> Result<()> {
                     let tts_muted_clone = tts_muted_for_tts.clone();
                     let tts_chat_history = chat_history.clone();
                     let bot_stats_tts = bot_stats.clone();
+                    let default_voice_clone = default_voice_for_tts.clone();
+                    let mut tts_rx = tts_rx_taken;
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
                             info!("TTS request: '{}'", request.text);
@@ -877,7 +909,7 @@ async fn main() -> Result<()> {
                             let tts_chat_history_sub = tts_chat_history.clone();
                             let tts_muted_sub = tts_muted_clone.clone();
                             let tts_event_tx_sub = tts_event_tx.clone();
-                            let default_voice_sub = default_voice_for_tts.clone();
+                            let default_voice_sub = default_voice_clone.clone();
                             let player_sub = player_clone.clone();
                             let synth_sub = synth_clone.clone();
 
@@ -949,6 +981,7 @@ async fn main() -> Result<()> {
                         }
                     });
                 }
+                } // close if let Some(tts_rx_taken)
 
                 // Process events from the SyncConnection stream
                 tokio::pin!(sync_con);
@@ -2926,7 +2959,28 @@ async fn main() -> Result<()> {
                 } // close loop
 
                 info!("Event loop ended");
-        } // close if let Some(connection)
+
+                // Clear the shared TS3 handle (connection is dead)
+                {
+                    let mut handle = shared_ts3_handle.lock().await;
+                    *handle = None;
+                }
+
+                if shutting_down {
+                    info!("Graceful shutdown complete, exiting reconnect loop");
+                    break 'reconnect;
+                }
+
+                // Unexpected disconnect — reconnect with backoff
+                reconnect_count += 1;
+                let delay_ms = (initial_delay_ms * 2u64.saturating_pow(reconnect_count.min(10) - 1)).min(max_delay_ms);
+                warn!("⚡ TS3 connection lost unexpectedly. Reconnecting in {}ms (attempt #{})...", delay_ms, reconnect_count);
+                // Wait for old clone to timeout on TS3 server
+                let wait_ms = delay_ms.max(35_000); // at least 35s to avoid clone conflicts
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+
+        } // close connection block
+        } // close 'reconnect loop
     });
 
     // Spawn WebSocket server task (with TTS channel if enabled)
