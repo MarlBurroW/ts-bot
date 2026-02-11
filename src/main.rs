@@ -229,6 +229,7 @@ async fn main() -> Result<()> {
     let chat_history: Arc<Mutex<std::collections::VecDeque<(String, String, String)>>> =
         Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(50)));
     // Each entry: (timestamp, author, text) — max 50 entries
+    let chat_history_for_ws = Some(chat_history.clone());
 
     // TTS rate limiter: max 5 uses per user per 60 seconds (keyed by client_id)
     let tts_rate_limits: Arc<Mutex<HashMap<u64, Vec<std::time::Instant>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -2056,7 +2057,7 @@ async fn main() -> Result<()> {
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws, default_voice_for_ws).await {
+        if let Err(e) = websocket::run_server(ws_config, event_tx, tts_tx_for_ws, shared_ts3_handle_for_ws, tts_stop_flag_for_ws, buffer_manager_for_ws, language_overrides_for_ws, tts_volume_for_ws, default_voice_for_ws, chat_history_for_ws).await {
             error!("WebSocket server error: {}", e);
         }
     });

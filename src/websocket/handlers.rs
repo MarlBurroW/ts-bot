@@ -82,6 +82,11 @@ pub enum CommandAction {
     GetVoice {
         command_id: Option<String>,
     },
+    /// Get chat/transcription history
+    GetHistory {
+        command_id: Option<String>,
+        count: u32,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -199,5 +204,12 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetVoice { command_id },
         ),
+        WebSocketCommand::GetHistory { command_id, count } => {
+            let count = count.unwrap_or(20).min(50);
+            (
+                WebSocketEvent::command_success(command_id.clone(), None),
+                CommandAction::GetHistory { command_id, count },
+            )
+        }
     }
 }

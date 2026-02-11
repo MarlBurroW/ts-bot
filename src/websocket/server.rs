@@ -78,6 +78,8 @@ struct AppState {
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
     /// Shared default TTS voice (runtime-adjustable)
     default_voice: Option<Arc<std::sync::RwLock<String>>>,
+    /// Shared chat history ring buffer (timestamp, author, text)
+    chat_history: Option<Arc<tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>>>,
 }
 
 /// Run the WebSocket server
@@ -94,6 +96,7 @@ pub async fn run_server(
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
     default_voice: Option<Arc<std::sync::RwLock<String>>>,
+    chat_history: Option<Arc<tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>>>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -110,6 +113,7 @@ pub async fn run_server(
         language_overrides,
         tts_volume,
         default_voice,
+        chat_history,
     };
 
     // Create Axum router with WebSocket endpoint
@@ -185,6 +189,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let tts_stop_flag = state.tts_stop_flag.clone();
     let tts_volume = state.tts_volume.clone();
     let default_voice = state.default_voice.clone();
+    let chat_history = state.chat_history.clone();
     let ts3_handle = state.ts3_handle.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
@@ -281,6 +286,37 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 command_id,
                                 Some(serde_json::json!({ "voice": voice }).to_string()),
                             ));
+                        }
+                        CommandAction::GetHistory { command_id, count } => {
+                            if let Some(ref hist) = chat_history {
+                                let history: tokio::sync::MutexGuard<'_, std::collections::VecDeque<(String, String, String)>> = hist.lock().await;
+                                let entries: Vec<serde_json::Value> = history.iter()
+                                    .rev()
+                                    .take(count as usize)
+                                    .map(|(ts, author, text)| {
+                                        serde_json::json!({
+                                            "timestamp": ts,
+                                            "author": author,
+                                            "text": text
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .into_iter()
+                                    .rev()
+                                    .collect();
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(serde_json::json!({
+                                        "history": entries,
+                                        "count": entries.len()
+                                    }).to_string()),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "Chat history not available".to_string(),
+                                ));
+                            }
                         }
                         CommandAction::GetServerState { command_id } => {
                             let mut handle_guard = ts3_handle.lock().await;
