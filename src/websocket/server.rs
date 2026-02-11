@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 
 use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 
-use crate::models::{BotConfig, WebSocketCommand, WebSocketEvent};
+use crate::models::{BotConfig, SharedChatHistory, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
 
@@ -79,13 +79,14 @@ struct AppState {
     /// Shared default TTS voice (runtime-adjustable)
     default_voice: Option<Arc<std::sync::RwLock<String>>>,
     /// Shared chat history ring buffer (timestamp, author, text)
-    chat_history: Option<Arc<tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>>>,
+    chat_history: Option<SharedChatHistory>,
 }
 
 /// Run the WebSocket server
 ///
 /// - `tts_tx`: optional channel to forward TTS speak requests (None if TTS disabled)
 /// - `ts3_handle`: shared TS3 connection handle (populated after TS3 connects)
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     config: BotConfig,
     event_broadcaster: broadcast::Sender<WebSocketEvent>,
@@ -96,7 +97,7 @@ pub async fn run_server(
     language_overrides: Option<Arc<tokio::sync::Mutex<HashMap<String, String>>>>,
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
     default_voice: Option<Arc<std::sync::RwLock<String>>>,
-    chat_history: Option<Arc<tokio::sync::Mutex<std::collections::VecDeque<(String, String, String)>>>>,
+    chat_history: Option<SharedChatHistory>,
 ) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.ws_host, config.ws_port);
     let socket_addr: SocketAddr = addr.parse()?;
@@ -785,12 +786,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     if language == "auto" {
                                         overrides.remove(&uid);
                                         info!("Language override removed for {} (client {}) via WS", uid, client_id);
-                                        let _ = save_language_prefs_ws(&overrides);
+                                        save_language_prefs_ws(&overrides);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language reset to auto-detect for client {}", client_id))));
                                     } else {
                                         overrides.insert(uid.clone(), language.clone());
                                         info!("Language override set to '{}' for {} (client {}) via WS", language, uid, client_id);
-                                        let _ = save_language_prefs_ws(&overrides);
+                                        save_language_prefs_ws(&overrides);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Language set to '{}' for client {}", language, client_id))));
                                     }
                                 } else {

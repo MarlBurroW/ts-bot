@@ -56,6 +56,9 @@ pub fn ensure_data_dir() {
 /// Trait for types that have a length (HashMap, Vec, etc.)
 pub trait Len {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<K, V, S> Len for std::collections::HashMap<K, V, S>

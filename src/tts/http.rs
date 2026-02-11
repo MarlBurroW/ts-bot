@@ -62,7 +62,7 @@ impl HttpTtsSynthesizer {
     /// OpenAI (and other streaming TTS APIs) use `transfer-encoding: chunked`
     /// and don't know the total size upfront, so they write 0xFFFFFFFF as the
     /// RIFF chunk size and data chunk size. hound rejects this.
-    fn fix_streaming_wav(wav: &mut Vec<u8>) {
+    fn fix_streaming_wav(wav: &mut [u8]) {
         if wav.len() < 44 {
             return;
         }

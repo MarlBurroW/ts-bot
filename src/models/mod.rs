@@ -10,5 +10,5 @@ pub use config::BotConfig;
 pub use message::{MessageEvent, MessageType};
 pub use command::WebSocketCommand;
 pub use events::WebSocketEvent;
-pub use state::{ActiveDuel, ActivePoll, BotStats, BotStatsData, Reminder};
+pub use state::{ActiveDuel, ActivePoll, BotStats, BotStatsData, ChatHistoryEntry, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
 pub use transcription::TranscriptionEvent;

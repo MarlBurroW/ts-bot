@@ -1,7 +1,7 @@
 {
-  "messages_received": 0,
+  "messages_received": 4,
   "commands_executed": 0,
-  "tts_calls": 0,
+  "tts_calls": 2,
   "voice_transcriptions": 0,
   "greetings_sent": 0
 }

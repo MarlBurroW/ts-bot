@@ -1,7 +1,7 @@
 mod ts3;
 
 use anyhow::Result;
-use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, Reminder};
+use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
 use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::websocket;
@@ -13,7 +13,6 @@ use ts3::client::TS3Client;
 use futures::prelude::*;
 use tokio::sync::broadcast;
 use tsproto_packets::packets::AudioData;
-use base64;
 use ts3_bot::audio::{
     SpeakerBufferManager,
     TranscriptionPipeline,
@@ -22,7 +21,6 @@ use ts3_bot::audio::whisper_api::WhisperApiTranscriber;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde_json;
 
 // SyncConnection for bidirectional communication
 use tsclientlib::prelude::*;
@@ -160,7 +158,7 @@ async fn main() -> Result<()> {
     let default_voice_for_ws = Some(default_voice.clone());
 
     // Last spoken text for !replay (text, voice, speed)
-    let last_spoken: Arc<Mutex<Option<(String, Option<String>, Option<f32>)>>> = Arc::new(Mutex::new(None));
+    let last_spoken: LastSpokenInfo = Arc::new(Mutex::new(None));
     let last_spoken_for_ws = last_spoken.clone();
     let last_spoken_for_ts3 = last_spoken.clone();
 
@@ -173,8 +171,7 @@ async fn main() -> Result<()> {
     let greet_cooldowns: Arc<Mutex<HashMap<u64, std::time::Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Chat history ring buffer (last 200 messages for !history) — persisted to data/chat_history.jsonl
-    let chat_history: Arc<Mutex<std::collections::VecDeque<(String, String, String)>>> =
-        Arc::new(Mutex::new(load_chat_history()));
+    let chat_history: SharedChatHistory = Arc::new(Mutex::new(load_chat_history()));
     let chat_history_for_ws = Some(chat_history.clone());
 
     // TTS rate limiter: max 5 uses per user per 60 seconds (keyed by client_id)
@@ -187,7 +184,7 @@ async fn main() -> Result<()> {
     // Notify-on-connect watchers: lowercase_target_name -> Vec<(requester_name, requester_uid)>
     // When a client connects whose lowercase name contains the key, poke all requesters
     // Persisted to data/notify.json
-    let notify_watchers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> = {
+    let notify_watchers: NotifyWatchers = {
         let map: HashMap<String, Vec<(String, String)>> = load_json("data/notify.json");
         if !map.is_empty() {
             let total: usize = map.values().map(|v| v.len()).sum();
@@ -315,7 +312,7 @@ async fn main() -> Result<()> {
                 // Spawned as a task because with_connection/send_command need
                 // sync_con to be polled (in the select! loop below).
                 let has_config_channel = config.ts3_channel.as_ref()
-                    .map_or(false, |c| !c.is_empty());
+                    .is_some_and(|c| !c.is_empty());
                 if !has_config_channel {
                     if let Ok(content) = std::fs::read_to_string(".last_channel") {
                         if let Ok(channel_id) = content.trim().parse::<u64>() {
@@ -501,7 +498,7 @@ async fn main() -> Result<()> {
                                         for client in state.clients.values() {
                                             let uid_str = client.uid.as_ref().map(|u| base64::encode(&u.0)).unwrap_or_default();
                                             if uid_str == uid_target {
-                                                target_clid = Some(client.id.0 as u16);
+                                                target_clid = Some(client.id.0);
                                                 break;
                                             }
                                         }
@@ -1138,7 +1135,7 @@ async fn main() -> Result<()> {
                                                             if let Ok(state) = con.get_state() {
                                                                 let bot_client = state.clients.get(&state.own_client);
                                                                 if let Some(bot) = bot_client {
-                                                                    let ch_id = bot.channel.0 as u64;
+                                                                    let ch_id = bot.channel.0;
                                                                     let ch_name = state.channels.get(&bot.channel)
                                                                         .map(|c| c.name.clone())
                                                                         .unwrap_or_else(|| format!("#{}", ch_id));
@@ -1217,7 +1214,7 @@ async fn main() -> Result<()> {
                                                                         let mut flags = Vec::new();
                                                                         if c.input_muted { flags.push("🔇mic"); }
                                                                         if c.output_muted { flags.push("🔇son"); }
-                                                                        if c.away_message.as_ref().map_or(false, |m| !m.is_empty()) {
+                                                                        if c.away_message.as_ref().is_some_and(|m| !m.is_empty()) {
                                                                             flags.push("💤away");
                                                                         }
                                                                         let flag_str = if flags.is_empty() {
@@ -1350,10 +1347,10 @@ async fn main() -> Result<()> {
                                                                         let ch_name_lower = ch.name.to_lowercase();
                                                                         if ch_name_lower == query_lower {
                                                                             // Exact match — use immediately
-                                                                            best_match = Some((id.0 as u64, ch.name.clone()));
+                                                                            best_match = Some((id.0, ch.name.clone()));
                                                                             break;
                                                                         } else if ch_name_lower.contains(&query_lower) && best_match.is_none() {
-                                                                            best_match = Some((id.0 as u64, ch.name.clone()));
+                                                                            best_match = Some((id.0, ch.name.clone()));
                                                                         }
                                                                     }
                                                                     best_match.map(|(ch_id, ch_name)| (own_id, ch_id, ch_name))
@@ -1421,7 +1418,7 @@ async fn main() -> Result<()> {
                                                                     (_, Some(sender_ch)) => {
                                                                         let ch_name = state.channels.get(&sender_ch).map(|c| c.name.clone()).unwrap_or_default();
                                                                         let own_id = state.own_client.0;
-                                                                        Some(Ok((own_id, sender_ch.0 as u64, ch_name)))
+                                                                        Some(Ok((own_id, sender_ch.0, ch_name)))
                                                                     }
                                                                     _ => Some(Err("❌ Impossible de trouver ton channel.".to_string()))
                                                                 }
@@ -1469,7 +1466,7 @@ async fn main() -> Result<()> {
                                                                 // Count clients per channel
                                                                 let mut client_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
                                                                 for c in state.clients.values() {
-                                                                    *client_counts.entry(c.channel.0 as u64).or_insert(0) += 1;
+                                                                    *client_counts.entry(c.channel.0).or_insert(0) += 1;
                                                                 }
 
                                                                 // Build channel tree (root channels sorted by order, then sub-channels)
@@ -1481,7 +1478,7 @@ async fn main() -> Result<()> {
 
                                                                 // Simple flat list with indentation for sub-channels
                                                                 for (id, ch) in &channels {
-                                                                    let count = client_counts.get(&(id.0 as u64)).copied().unwrap_or(0);
+                                                                    let count = client_counts.get(&{ id.0 }).copied().unwrap_or(0);
                                                                     let indent = if ch.parent.0 == 0 { "" } else { "  " };
                                                                     let users = if count > 0 {
                                                                         format!(" [b]({})[/b]", count)
@@ -1663,7 +1660,7 @@ async fn main() -> Result<()> {
 
                                                         // Check for simple number (e.g., !roll 20 = random 1-20)
                                                         if let Ok(max) = s.parse::<i64>() {
-                                                            if max < 1 || max > 1000000 { return Err("Nombre entre 1 et 1000000 svp".to_string()); }
+                                                            if !(1..=1000000).contains(&max) { return Err("Nombre entre 1 et 1000000 svp".to_string()); }
                                                             let val = rand::thread_rng().gen_range(1..=max);
                                                             return Ok(format!("🎲 1-{} → [b]{}[/b]", max, val));
                                                         }
@@ -1674,7 +1671,7 @@ async fn main() -> Result<()> {
                                                         let count: u32 = if count_str.is_empty() { 1 } else {
                                                             count_str.parse().map_err(|_| "Nombre de dés invalide")?
                                                         };
-                                                        if count < 1 || count > 100 { return Err("1 à 100 dés max".to_string()); }
+                                                        if !(1..=100).contains(&count) { return Err("1 à 100 dés max".to_string()); }
 
                                                         let rest = &s[d_pos+1..];
                                                         // Split on + or -
@@ -1687,7 +1684,7 @@ async fn main() -> Result<()> {
                                                             (rest, 0i64)
                                                         };
                                                         let sides: u32 = sides_str.parse().map_err(|_| "Nombre de faces invalide")?;
-                                                        if sides < 2 || sides > 1000 { return Err("2 à 1000 faces".to_string()); }
+                                                        if !(2..=1000).contains(&sides) { return Err("2 à 1000 faces".to_string()); }
 
                                                         let mut rng = rand::thread_rng();
                                                         let rolls: Vec<u32> = (0..count).map(|_| rng.gen_range(1..=sides)).collect();
@@ -2071,7 +2068,7 @@ async fn main() -> Result<()> {
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!history") {
                                                     let args = message.get(8..).unwrap_or("").trim();
-                                                    let count: usize = args.parse().unwrap_or(20).min(50).max(1);
+                                                    let count: usize = args.parse().unwrap_or(20).clamp(1, 50);
                                                     let hist = chat_history.lock().await;
                                                     if hist.is_empty() {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("📜 Aucun historique.".to_string(), &reply_target, reply_sender_id));
@@ -2335,7 +2332,7 @@ async fn main() -> Result<()> {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun sondage en cours. Crée-en un avec [b]!poll[/b]".to_string(), &reply_target, reply_sender_id));
                                                     }
                                                 } else if msg_lower.starts_with("!remind") || msg_lower.starts_with("!rappel") {
-                                                    let arg = message.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                                    let arg = message.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                                                     if arg.is_empty() || arg == "list" {
                                                         // Show pending reminders for this user
                                                         let reminders_lock = reminders.lock().await;
@@ -2509,7 +2506,7 @@ async fn main() -> Result<()> {
                                                         let player_ref = player.clone();
                                                         let synth_ref = synth.clone();
                                                         let tx_tts = ts3_msg_tx.clone();
-                                                        let rt_tts = reply_target.clone();
+                                                        let rt_tts = reply_target;
                                                         let rs_tts = reply_sender_id;
                                                         let evt_tts = event_tx_clone.clone();
                                                         tokio::spawn(async move {
@@ -2637,7 +2634,7 @@ async fn main() -> Result<()> {
                                                                 state.clients.get(&client_id).map(|c| {
                                                                     let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
                                                                     let cc = if c.country_code.is_empty() { None } else { Some(c.country_code.clone()) };
-                                                                    (c.name.clone(), c.channel.0 as u64, uid, cc)
+                                                                    (c.name.clone(), c.channel.0, uid, cc)
                                                                 })
                                                             })
                                                         }).await;
@@ -2673,12 +2670,12 @@ async fn main() -> Result<()> {
                                                                 let poke_targets = sender_for_poke.with_connection(move |con| {
                                                                     con.get_state().ok().map(|state| {
                                                                         let mut targets = Vec::new();
-                                                                        for (_, client) in &state.clients {
+                                                                        for client in state.clients.values() {
                                                                             let cuid = client.uid.as_ref().map(|u| base64::encode(&u.0));
                                                                             if let Some(ref cuid_str) = cuid {
                                                                                 for (_, req_uid) in &to_poke {
                                                                                     if cuid_str == req_uid {
-                                                                                        targets.push(client.id.0 as u16);
+                                                                                        targets.push(client.id.0);
                                                                                     }
                                                                                 }
                                                                             }
@@ -2747,7 +2744,7 @@ async fn main() -> Result<()> {
                                             }
                                             Event::PropertyChanged { id, old, .. } => {
                                                 if let (PropertyId::ClientChannel(client_id), PropertyValue::ChannelId(old_channel)) = (id, old) {
-                                                    let old_channel_id = old_channel.0 as u64;
+                                                    let old_channel_id = old_channel.0;
                                                     let client_id_u64 = client_id.0 as u64;
                                                     let mut sender = ts3_sender.clone();
                                                     let tx = event_tx_clone.clone();
@@ -2760,12 +2757,12 @@ async fn main() -> Result<()> {
                                                         let result = sender.with_connection(move |con| {
                                                             con.get_state().ok().and_then(|state| {
                                                                 let is_self = state.own_client == client_id;
-                                                                let bot_channel = state.clients.get(&state.own_client).map(|c| c.channel.0 as u64);
+                                                                let bot_channel = state.clients.get(&state.own_client).map(|c| c.channel.0);
                                                                 state.clients.get(&client_id).map(|c| {
                                                                     let uid = c.uid.as_ref().map(|u| base64::encode(&u.0));
                                                                     let old_ch_name = state.channels.get(&tsclientlib::ChannelId(old_channel.0)).map(|ch| ch.name.clone());
                                                                     let new_ch_name = state.channels.get(&c.channel).map(|ch| ch.name.clone());
-                                                                    (c.name.clone(), c.channel.0 as u64, is_self, uid, old_ch_name, new_ch_name, bot_channel)
+                                                                    (c.name.clone(), c.channel.0, is_self, uid, old_ch_name, new_ch_name, bot_channel)
                                                                 })
                                                             })
                                                         }).await;

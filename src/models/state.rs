@@ -3,8 +3,22 @@
 //! These structs were extracted from main() to improve code organization
 //! and enable reuse across modules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+/// Chat history entry: (timestamp, author, text).
+pub type ChatHistoryEntry = (String, String, String);
+
+/// Shared chat history buffer (thread-safe, async).
+pub type SharedChatHistory = Arc<Mutex<VecDeque<ChatHistoryEntry>>>;
+
+/// Last spoken TTS info: (text, voice, speed). Uses async Mutex.
+pub type LastSpokenInfo = Arc<Mutex<Option<(String, Option<String>, Option<f32>)>>>;
+
+/// Notify watchers: lowercase target name → vec of (requester_name, requester_uid). Uses async Mutex.
+pub type NotifyWatchers = Arc<Mutex<HashMap<String, Vec<(String, String)>>>>;
 
 /// An active poll in a TS3 channel.
 pub struct ActivePoll {

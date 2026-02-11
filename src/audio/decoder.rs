@@ -51,7 +51,7 @@ impl OpusDecoder {
             Err(e) => {
                 let count = OPUS_DECODE_ERRORS.fetch_add(1, Ordering::Relaxed) + 1;
                 // Log only every 200th error to reduce noise
-                if count == 1 || count % 200 == 0 {
+                if count == 1 || count.is_multiple_of(200) {
                     warn!("Opus decode error (total: {}): {} — using PLC", count, e);
                 }
                 // Use Opus PLC: pass None to generate concealment audio

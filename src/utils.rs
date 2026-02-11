@@ -32,14 +32,12 @@ pub fn format_uptime(secs: u64, detailed: bool) -> String {
         } else {
             format!("{}j {}h {}m", secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60)
         }
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     } else {
-        if secs < 3600 {
-            format!("{}m", secs / 60)
-        } else if secs < 86400 {
-            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-        } else {
-            format!("{}j {}h", secs / 86400, (secs % 86400) / 3600)
-        }
+        format!("{}j {}h", secs / 86400, (secs % 86400) / 3600)
     }
 }
 

@@ -80,7 +80,7 @@ impl TS3Client {
         // Set channel from config (if provided)
         // Note: .last_channel persistence uses clientmove after connect (in main.rs)
         let has_channel = self.config.ts3_channel.as_ref()
-            .map_or(false, |c| !c.is_empty());
+            .is_some_and(|c| !c.is_empty());
         if let Some(ref channel) = self.config.ts3_channel {
             if !channel.is_empty() {
                 info!("Joining channel from config: {}", channel);

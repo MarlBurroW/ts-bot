@@ -64,8 +64,8 @@ fn strip_markdown(text: &str) -> String {
                 let abs_close = i + close_bracket;
                 if abs_close + 1 < len && chars[abs_close + 1] == '(' {
                     // Extract link text
-                    for j in (i + 1)..abs_close {
-                        result.push(chars[j]);
+                    for ch in &chars[(i + 1)..abs_close] {
+                        result.push(*ch);
                     }
                     // Skip (url)
                     if let Some(close_paren) = chars[abs_close + 1..].iter().position(|&c| c == ')') {
