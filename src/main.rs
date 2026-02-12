@@ -2,7 +2,7 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
-use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, format_connection_duration, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
+use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
@@ -131,15 +131,16 @@ async fn main() -> Result<()> {
     let language_overrides_for_ws = Some(language_overrides.clone());
 
     // Load persisted bot state (mute + volume + voice)
-    let (persisted_muted, persisted_volume, persisted_voice) = {
+    let (persisted_muted, persisted_volume, persisted_voice, persisted_speed) = {
         let v: serde_json::Value = load_json("data/bot_state.json");
         let muted = v.get("muted").and_then(|m| m.as_bool()).unwrap_or(false);
         let vol = v.get("volume").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
         let voice = v.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string());
-        (muted, vol, voice)
+        let speed = v.get("speed").and_then(|s| s.as_f64()).map(|s| s as f32);
+        (muted, vol, voice, speed)
     };
-    if persisted_muted || persisted_volume != 100 || persisted_voice.is_some() {
-        info!("Restored bot state: muted={}, volume={}%, voice={}", persisted_muted, persisted_volume, persisted_voice.as_deref().unwrap_or("config default"));
+    if persisted_muted || persisted_volume != 100 || persisted_voice.is_some() || persisted_speed.is_some() {
+        info!("Restored bot state: muted={}, volume={}%, voice={}, speed={}", persisted_muted, persisted_volume, persisted_voice.as_deref().unwrap_or("config default"), persisted_speed.map_or("default".to_string(), |s| format!("{:.2}", s)));
     }
 
     // Shared TTS mute flag (when true, agent TTS is skipped but text echo still sent)
@@ -157,6 +158,13 @@ async fn main() -> Result<()> {
     ));
     let default_voice_for_tts = default_voice.clone();
     let default_voice_for_ws = Some(default_voice.clone());
+
+    // Shared default TTS speed (overridable at runtime via !speed, persisted)
+    let default_speed: Arc<std::sync::RwLock<f32>> = Arc::new(std::sync::RwLock::new(
+        persisted_speed.unwrap_or(1.15)
+    ));
+    let default_speed_for_tts = default_speed.clone();
+    let default_speed_for_ws = Some(default_speed.clone());
 
     // Last spoken text for !replay (text, voice, speed)
     let last_spoken: LastSpokenInfo = Arc::new(Mutex::new(None));
@@ -628,6 +636,7 @@ async fn main() -> Result<()> {
                     let tts_chat_history = chat_history.clone();
                     let bot_stats_tts = bot_stats.clone();
                     let default_voice_clone = default_voice_for_tts.clone();
+                    let default_speed_clone = default_speed_for_tts.clone();
                     let mut tts_rx = tts_rx_taken;
                     tokio::spawn(async move {
                         while let Some(request) = tts_rx.recv().await {
@@ -641,6 +650,7 @@ async fn main() -> Result<()> {
                             let tts_muted_sub = tts_muted_clone.clone();
                             let tts_event_tx_sub = tts_event_tx.clone();
                             let default_voice_sub = default_voice_clone.clone();
+                            let default_speed_for_tts_sub = default_speed_clone.clone();
                             let player_sub = player_clone.clone();
                             let synth_sub = synth_clone.clone();
 
@@ -682,12 +692,15 @@ async fn main() -> Result<()> {
                                 // Emit speak_started event
                                 let _ = tts_event_tx_sub.send(WebSocketEvent::speak_started(request.text.clone()));
                                 let start = std::time::Instant::now();
-                                // Use default voice override if no explicit voice in request
+                                // Use default voice/speed overrides if not explicit in request
                                 let effective_voice = request.voice.or_else(|| {
                                     Some(default_voice_sub.read().unwrap().clone())
                                 });
+                                let effective_speed = request.speed.or_else(|| {
+                                    Some(*default_speed_for_tts_sub.read().unwrap())
+                                });
                                 let speak_result = player_sub
-                                    .speak(request.text.clone(), effective_voice, request.speed, synth_sub.clone())
+                                    .speak(request.text.clone(), effective_voice, effective_speed, synth_sub.clone())
                                     .await;
                                 let duration_ms = start.elapsed().as_millis() as u64;
                                 match speak_result {
@@ -1100,6 +1113,7 @@ async fn main() -> Result<()> {
                                                     let rs_status = reply_sender_id;
                                                     let bm_status = buffer_manager.clone();
                                                     let default_voice_status = default_voice.clone();
+                                                    let default_speed_status = default_speed.clone();
                                                     tokio::spawn(async move {
                                                         let channel_info = sender_for_status.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
@@ -1124,6 +1138,7 @@ async fn main() -> Result<()> {
                                                         };
 
                                                         let voice_str = default_voice_status.read().unwrap().clone();
+                                                        let speed_val = *default_speed_status.read().unwrap();
                                                         let silence_ms = {
                                                             let bm = bm_status.lock().await;
                                                             bm.silence_timeout_ms()
@@ -1136,6 +1151,7 @@ async fn main() -> Result<()> {
                                                              • Parle : {}\n\
                                                              • Volume : {}%\n\
                                                              • Voix : {}\n\
+                                                             • Vitesse : {:.2}x\n\
                                                              • TTS : {}\n\
                                                              • Whisper : {}\n\
                                                              • Greetings : {}\n\
@@ -1146,6 +1162,7 @@ async fn main() -> Result<()> {
                                                             speak_str,
                                                             vol,
                                                             voice_str,
+                                                            speed_val,
                                                             tts_str,
                                                             whisper_str,
                                                             greet_str,
@@ -1491,7 +1508,7 @@ async fn main() -> Result<()> {
                                                             // Persist volume
                                                             let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
                                                             let voice_val = default_voice.read().unwrap().clone();
-                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol, "voice": voice_val}));
+                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
                                                             let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("{} Volume réglé à {}%", emoji, vol),
@@ -1505,7 +1522,7 @@ async fn main() -> Result<()> {
                                                         ));
                                                     }
                                                 } else if msg_lower.starts_with("!voice") {
-                                                    let valid_voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
+                                                    let valid_voices = valid_voices_for_model(&config.tts_model);
                                                     let parts: Vec<&str> = message.split_whitespace().collect();
                                                     if parts.len() < 2 {
                                                         // Show current default voice
@@ -1516,12 +1533,12 @@ async fn main() -> Result<()> {
                                                         ));
                                                     } else {
                                                         let requested = parts[1].to_lowercase();
-                                                        if valid_voices.contains(&requested.as_str()) {
+                                                        if valid_voices.contains(&requested) {
                                                             *default_voice.write().unwrap() = requested.clone();
                                                             // Persist
                                                             let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
                                                             let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol_val, "voice": requested}));
+                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol_val, "voice": requested, "speed": *default_speed.read().unwrap()}));
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
                                                                 &reply_target, reply_sender_id,
@@ -1533,12 +1550,38 @@ async fn main() -> Result<()> {
                                                             ));
                                                         }
                                                     }
+                                                } else if msg_lower.starts_with("!speed") {
+                                                    let parts: Vec<&str> = message.split_whitespace().collect();
+                                                    if parts.len() < 2 {
+                                                        let current = *default_speed.read().unwrap();
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("🏎️ Vitesse TTS par défaut : [b]{:.2}x[/b]\nRange : 0.25 — 4.0 (1.0 = normal)", current),
+                                                            &reply_target, reply_sender_id,
+                                                        ));
+                                                    } else {
+                                                        match parts[1].parse::<f32>() {
+                                                            Ok(s) if (0.25..=4.0).contains(&s) => {
+                                                                *default_speed.write().unwrap() = s;
+                                                                save_bot_state_field("speed", &s);
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    format!("🏎️ Vitesse TTS changée en [b]{:.2}x[/b]", s),
+                                                                    &reply_target, reply_sender_id,
+                                                                ));
+                                                            }
+                                                            _ => {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                                    "❌ Vitesse invalide. Range : 0.25 — 4.0 (ex: !speed 1.0, !speed 1.3)".to_string(),
+                                                                    &reply_target, reply_sender_id,
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
                                                 } else if msg_lower == "!mute" {
                                                     tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist mute state
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
                                                     let voice_val = default_voice.read().unwrap().clone();
-                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": true, "volume": vol_val, "voice": voice_val}));
+                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": true, "volume": vol_val, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -1548,7 +1591,7 @@ async fn main() -> Result<()> {
                                                     // Persist unmute state
                                                     let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
                                                     let voice_val = default_voice.read().unwrap().clone();
-                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": false, "volume": vol_val, "voice": voice_val}));
+                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": false, "volume": vol_val, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -2202,7 +2245,7 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower.starts_with("!tts ") {
                                                     // Parse optional voice:XX and speed:XX prefixes
                                                     let raw_text = message[5..].trim();
-                                                    let valid_voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
+                                                    let valid_voices = valid_voices_for_model(&config.tts_model);
                                                     let mut tts_voice: Option<String> = None;
                                                     let mut tts_speed: Option<f32> = None;
                                                     let mut remaining = raw_text;
@@ -2212,7 +2255,7 @@ async fn main() -> Result<()> {
                                                         if let Some(rest) = trimmed.strip_prefix("voice:") {
                                                             let end = rest.find(' ').unwrap_or(rest.len());
                                                             let v = &rest[..end];
-                                                            if valid_voices.contains(&v.to_lowercase().as_str()) {
+                                                            if valid_voices.contains(&v.to_lowercase()) {
                                                                 tts_voice = Some(v.to_lowercase());
                                                                 remaining = &rest[end..];
                                                                 continue;
@@ -2255,8 +2298,9 @@ async fn main() -> Result<()> {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("⏳ Rate limit : max 5 TTS par minute. Attends un peu !".to_string(), &reply_target, reply_sender_id));
                                                         } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                                                         let sender_name = invoker.name.to_string();
-                                                        // Resolve voice: explicit > runtime default (from !voice / set_voice)
+                                                        // Resolve voice/speed: explicit > runtime default (from !voice/!speed / set_voice/set_speed)
                                                         let tts_voice = tts_voice.or_else(|| Some(default_voice.read().unwrap().clone()));
+                                                        let tts_speed = tts_speed.or_else(|| Some(*default_speed.read().unwrap()));
                                                         let voice_label = tts_voice.as_deref().unwrap_or("default");
                                                         let speed_label = tts_speed.map_or("default".to_string(), |s| format!("{:.1}x", s));
                                                         info!("🔊 TTS request from {} (voice: {}, speed: {}): '{}'", sender_name, voice_label, speed_label, tts_text);
@@ -2734,6 +2778,7 @@ async fn main() -> Result<()> {
             language_overrides: language_overrides_for_ws,
             tts_volume: tts_volume_for_ws,
             default_voice: default_voice_for_ws,
+            default_speed: default_speed_for_ws,
             chat_history: chat_history_for_ws,
         };
         if let Err(e) = websocket::run_server(ws_config, event_tx, ws_params).await {

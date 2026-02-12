@@ -119,6 +119,14 @@ pub enum WebSocketCommand {
     GetTimeout {
         command_id: Option<String>,
     },
+    SetSpeed {
+        command_id: Option<String>,
+        /// TTS speed (0.25-4.0, default 1.15)
+        speed: f32,
+    },
+    GetSpeed {
+        command_id: Option<String>,
+    },
 }
 
 impl WebSocketCommand {
@@ -147,6 +155,8 @@ impl WebSocketCommand {
             Self::GetHistory { command_id, .. } => command_id.as_deref(),
             Self::SetTimeout { command_id, .. } => command_id.as_deref(),
             Self::GetTimeout { command_id, .. } => command_id.as_deref(),
+            Self::SetSpeed { command_id, .. } => command_id.as_deref(),
+            Self::GetSpeed { command_id, .. } => command_id.as_deref(),
         }
     }
 
@@ -199,6 +209,12 @@ impl WebSocketCommand {
             Self::SetTimeout { timeout_ms, .. } => {
                 if *timeout_ms < 500 || *timeout_ms > 10000 {
                     return Err("Timeout must be 500-10000ms".to_string());
+                }
+                Ok(())
+            }
+            Self::SetSpeed { speed, .. } => {
+                if *speed < 0.25 || *speed > 4.0 {
+                    return Err("Speed must be 0.25-4.0".to_string());
                 }
                 Ok(())
             }

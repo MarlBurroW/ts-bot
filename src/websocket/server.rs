@@ -52,8 +52,12 @@ struct AppState {
     tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
     /// Shared default TTS voice (runtime-adjustable)
     default_voice: Option<Arc<std::sync::RwLock<String>>>,
+    /// Shared default TTS speed (runtime-adjustable, 0.25-4.0)
+    default_speed: Option<Arc<std::sync::RwLock<f32>>>,
     /// Shared chat history ring buffer (timestamp, author, text)
     chat_history: Option<SharedChatHistory>,
+    /// TTS model name (for voice validation)
+    tts_model: String,
 }
 
 /// Bundled parameters for `run_server`, avoiding a long argument list.
@@ -72,6 +76,8 @@ pub struct WebSocketServerParams {
     pub tts_volume: Option<Arc<std::sync::atomic::AtomicU8>>,
     /// Shared default TTS voice (runtime-adjustable)
     pub default_voice: Option<Arc<std::sync::RwLock<String>>>,
+    /// Shared default TTS speed (runtime-adjustable, 0.25-4.0)
+    pub default_speed: Option<Arc<std::sync::RwLock<f32>>>,
     /// Shared chat history ring buffer
     pub chat_history: Option<SharedChatHistory>,
 }
@@ -97,7 +103,9 @@ pub async fn run_server(
         language_overrides: params.language_overrides,
         tts_volume: params.tts_volume,
         default_voice: params.default_voice,
+        default_speed: params.default_speed,
         chat_history: params.chat_history,
+        tts_model: config.tts_model.clone(),
     };
 
     // Create Axum router with WebSocket endpoint
@@ -173,6 +181,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let tts_stop_flag = state.tts_stop_flag.clone();
     let tts_volume = state.tts_volume.clone();
     let default_voice = state.default_voice.clone();
+    let default_speed = state.default_speed.clone();
     let chat_history = state.chat_history.clone();
     let ts3_handle = state.ts3_handle.clone();
     let mut recv_task = tokio::spawn(async move {
@@ -247,13 +256,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             ));
                         }
                         CommandAction::SetVoice { command_id, voice } => {
-                            if let Some(ref dv) = default_voice {
-                                *dv.write().unwrap() = voice.clone();
-                                save_bot_state_field("voice", &voice);
-                                info!("Default TTS voice set to '{}' via WebSocket", voice);
+                            let valid = crate::utils::valid_voices_for_model(&state.tts_model);
+                            if !valid.contains(&voice.to_lowercase()) {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    format!("Invalid voice '{}' for model '{}'. Valid: {}", voice, state.tts_model, valid.join(", ")),
+                                ));
+                            } else if let Some(ref dv) = default_voice {
+                                let voice_lower = voice.to_lowercase();
+                                *dv.write().unwrap() = voice_lower.clone();
+                                save_bot_state_field("voice", &voice_lower);
+                                info!("Default TTS voice set to '{}' via WebSocket", voice_lower);
                                 let _ = event_tx.send(WebSocketEvent::command_success(
                                     command_id,
-                                    Some(format!("Default voice set to '{}'", voice)),
+                                    Some(format!("Default voice set to '{}'", voice_lower)),
                                 ));
                             } else {
                                 let _ = event_tx.send(WebSocketEvent::command_error(
@@ -269,6 +285,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             let _ = event_tx.send(WebSocketEvent::command_success(
                                 command_id,
                                 Some(serde_json::json!({ "voice": voice }).to_string()),
+                            ));
+                        }
+                        CommandAction::SetSpeed { command_id, speed } => {
+                            if let Some(ref ds) = default_speed {
+                                *ds.write().unwrap() = speed;
+                                save_bot_state_field("speed", &speed);
+                                info!("Default TTS speed set to {:.2} via WebSocket", speed);
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(format!("Default speed set to {:.2}", speed)),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "TTS not enabled".to_string(),
+                                ));
+                            }
+                        }
+                        CommandAction::GetSpeed { command_id } => {
+                            let speed: f32 = default_speed.as_ref()
+                                .map(|ds| *ds.read().unwrap())
+                                .unwrap_or(1.15);
+                            let _ = event_tx.send(WebSocketEvent::command_success(
+                                command_id,
+                                Some(serde_json::json!({ "speed": speed }).to_string()),
                             ));
                         }
                         CommandAction::GetHistory { command_id, count } => {

@@ -96,6 +96,15 @@ pub enum CommandAction {
     GetTimeout {
         command_id: Option<String>,
     },
+    /// Set default TTS speed (0.25-4.0)
+    SetSpeed {
+        command_id: Option<String>,
+        speed: f32,
+    },
+    /// Get current default TTS speed
+    GetSpeed {
+        command_id: Option<String>,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -227,6 +236,14 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::GetTimeout { command_id } => (
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetTimeout { command_id },
+        ),
+        WebSocketCommand::SetSpeed { command_id, speed } => (
+            WebSocketEvent::command_success(command_id.clone(), Some(format!("Speed set to {:.2}", speed))),
+            CommandAction::SetSpeed { command_id, speed },
+        ),
+        WebSocketCommand::GetSpeed { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetSpeed { command_id },
         ),
     }
 }

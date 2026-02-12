@@ -5,6 +5,25 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use tracing::info;
 
+/// All voices supported by tts-1 (the classic 6).
+const TTS1_VOICES: [&str; 6] = ["alloy", "echo", "fable", "nova", "onyx", "shimmer"];
+/// Additional voices only supported by gpt-4o-mini-tts.
+const GPT4O_MINI_EXTRA: [&str; 5] = ["ash", "ballad", "coral", "sage", "verse"];
+
+/// Returns the list of valid voice names for a given TTS model.
+/// - `tts-1` / `tts-1-hd`: only the classic 6 voices
+/// - `gpt-4o-mini-tts` or unknown: all 11 voices (permissive)
+pub fn valid_voices_for_model(model: &str) -> Vec<String> {
+    let base: Vec<String> = TTS1_VOICES.iter().map(|s| s.to_string()).collect();
+    if model == "tts-1" || model == "tts-1-hd" {
+        base
+    } else {
+        let mut all = base;
+        all.extend(GPT4O_MINI_EXTRA.iter().map(|s| s.to_string()));
+        all
+    }
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8 char.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -112,13 +131,13 @@ pub fn format_duration_ms(ms: u64) -> String {
 
 /// Persist a single field in `data/bot_state.json` using read-modify-write.
 /// Preserves all other fields in the JSON object.
-pub fn save_bot_state_field(key: &str, value: &str) {
+pub fn save_bot_state_field<V: serde::Serialize>(key: &str, value: &V) {
     let _ = std::fs::create_dir_all("data");
     let mut state: serde_json::Value = std::fs::read_to_string("data/bot_state.json")
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    state[key] = serde_json::Value::String(value.to_string());
+    state[key] = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
     if let Ok(json) = serde_json::to_string_pretty(&state) {
         let _ = std::fs::write("data/bot_state.json", json);
     }
@@ -266,5 +285,34 @@ mod tests {
         assert_eq!(format_duration_ms(5_400_000), "1h30m");
         assert_eq!(format_duration_ms(86_400_000), "1j");
         assert_eq!(format_duration_ms(90_000_000), "1j1h");
+    }
+
+    // Voices supported by tts-1
+    const TTS1_VOICES: &[&str] = &["alloy", "echo", "fable", "nova", "onyx", "shimmer"];
+    // Additional voices only in gpt-4o-mini-tts
+    const GPT4O_MINI_ONLY: &[&str] = &["ash", "ballad", "coral", "sage", "verse"];
+
+    #[test]
+    fn test_valid_voices_tts1() {
+        for v in TTS1_VOICES {
+            assert!(super::valid_voices_for_model("tts-1").contains(&v.to_string()));
+        }
+        for v in GPT4O_MINI_ONLY {
+            assert!(!super::valid_voices_for_model("tts-1").contains(&v.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_valid_voices_gpt4o_mini_tts() {
+        let voices = super::valid_voices_for_model("gpt-4o-mini-tts");
+        for v in TTS1_VOICES.iter().chain(GPT4O_MINI_ONLY.iter()) {
+            assert!(voices.contains(&v.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_valid_voices_unknown_model() {
+        // Unknown models get all voices (permissive)
+        assert_eq!(super::valid_voices_for_model("kokoro").len(), 11);
     }
 }

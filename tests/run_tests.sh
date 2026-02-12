@@ -474,6 +474,33 @@ test_voice_set() {
     fi
 }
 
+test_speed_command() {
+    # !speed should show current speed
+    if sq_send_and_check "!speed" "itesse" 3; then
+        log_pass "!speed shows current speed"
+    else
+        log_fail "!speed shows current speed" "no speed info in response"
+    fi
+}
+
+test_speed_set() {
+    # !speed 1.3 should change the default speed
+    if sq_send_and_check "!speed 1.3" "1.30" 3; then
+        log_pass "!speed 1.3 changes default speed"
+    else
+        log_fail "!speed 1.3 changes default speed" "no confirmation"
+    fi
+}
+
+test_speed_invalid() {
+    # !speed 5.0 should show error
+    if sq_send_and_check "!speed 5.0" "invalide" 3; then
+        log_pass "!speed 5.0 shows error for invalid speed"
+    else
+        log_fail "!speed 5.0 shows error for invalid speed" "no error message"
+    fi
+}
+
 test_seen_command() {
     # !seen should show tracked count
     if sq_send_and_check "!seen" "👁️" 3; then
@@ -535,6 +562,9 @@ test_quote_count
 test_history_command
 test_voice_command
 test_voice_set
+test_speed_command
+test_speed_set
+test_speed_invalid
 test_seen_command
 test_ping_command
 
@@ -787,6 +817,36 @@ test_ws_set_voice_invalid() {
     fi
 }
 
+test_ws_get_speed() {
+    local resp
+    resp=$(ws_cmd '{"type":"get_speed","command_id":"t-gs"}')
+    if echo "$resp" | grep -q 'speed'; then
+        log_pass "WS get_speed returns speed"
+    else
+        log_fail "WS get_speed returns speed" "resp: $resp"
+    fi
+}
+
+test_ws_set_speed() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_speed","speed":1.3,"command_id":"t-ss"}')
+    if echo "$resp" | grep -q '"success"\|"status"'; then
+        log_pass "WS set_speed accepts valid speed"
+    else
+        log_fail "WS set_speed accepts valid speed" "resp: $resp"
+    fi
+}
+
+test_ws_set_speed_invalid() {
+    local resp
+    resp=$(ws_cmd '{"type":"set_speed","speed":5.0,"command_id":"t-ssi"}')
+    if echo "$resp" | grep -q '"success":false'; then
+        log_pass "WS set_speed rejects invalid speed"
+    else
+        log_fail "WS set_speed rejects invalid speed" "resp: $resp"
+    fi
+}
+
 test_ws_get_history() {
     local resp
     resp=$(ws_cmd '{"type":"get_history","count":5,"command_id":"t-hist"}')
@@ -995,6 +1055,9 @@ if command -v websocat &>/dev/null; then
     test_ws_get_voice
     test_ws_set_voice
     test_ws_set_voice_invalid
+    test_ws_get_speed
+    test_ws_set_speed
+    test_ws_set_speed_invalid
     test_ws_get_history
     test_ws_get_timeout
     test_ws_set_timeout

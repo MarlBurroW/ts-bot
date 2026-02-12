@@ -23,6 +23,7 @@ pub fn help_text() -> String {
      • [b]!come[/b] / [b]!viens[/b] — le bot vient dans ton channel\n\
      • [b]!replay[/b] — rejouer le dernier message TTS\n\
      • [b]!voice[/b] [nom] — changer la voix par défaut (alloy/echo/nova/onyx...)\n\
+     • [b]!speed[/b] [valeur] — changer la vitesse TTS par défaut (0.25-4.0)\n\
      • [b]!volume[/b] [0-200] — régler le volume TTS (100 = normal)\n\
      • [b]!mute[/b] / [b]!unmute[/b] — couper/rétablir la voix (le bot écoute toujours)\n\
      • [b]!greet[/b] [on|off] — activer/désactiver les salutations auto\n\

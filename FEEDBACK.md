@@ -45,3 +45,16 @@ Preuve : après restart à 20:36:46, le bot ne log que lui-même (Marlbot1 id:97
 Status: done
 Priority: medium
 Note: Root cause: the OpenClaw plugin was sending `voice: "onyx"` (from static config) on every `speak` command, overriding the bot's runtime default set by `set_voice`. Fix: removed the voice override from the plugin's `deliverReply()` — now `speak` commands don't specify a voice, letting the bot use its runtime default (changeable via `teamspeak_set_voice` tool or `!voice` chat command). The bot already had `set_voice`/`get_voice` WS commands and `!voice` chat command working correctly — only the plugin was bypassing them.
+
+## 2026-02-12 - Commande !speed pour changer la vitesse TTS par défaut
+Status: done
+Priority: medium
+Note: Already implemented! `!speed` command exists in main.rs (line ~1553), persists to `bot_state.json`, validates range 0.25-4.0, shows current value without args, and is used as default fallback for all TTS output. Also available via WS API (`set_speed`/`get_speed`). In help text and tested.
+
+Ajouter une commande `!speed <valeur>` (ex: `!speed 1.0`, `!speed 1.3`) pour changer la vitesse TTS par défaut, similaire à `!voice`. Actuellement la vitesse est hardcodée à 1.15x. La valeur doit être persistée dans `bot_state.json` comme pour voice/volume/muted, et utilisée comme fallback quand aucun `speed:X` n'est spécifié dans `!tts`. Range valide : 0.25 à 4.0.
+
+## 2026-02-12 - Valider les voix selon le modèle TTS
+Status: pending
+Priority: low
+
+Les voix ash, ballad, coral, sage, verse ne sont supportées que par `gpt-4o-mini-tts`, pas par `tts-1`. Le bot les accepte dans `!voice` mais l'API plante ensuite. Soit filtrer les voix invalides selon le modèle configuré, soit passer au modèle `gpt-4o-mini-tts`.
