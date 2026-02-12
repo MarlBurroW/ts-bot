@@ -5,7 +5,7 @@
 
 use rand::Rng;
 
-use crate::models::BotStats;
+use crate::models::{ActivePoll, BotStats};
 use crate::persistence::{load_json, save_json};
 use crate::utils::{format_uptime, truncate_str};
 
@@ -351,6 +351,145 @@ pub fn history_response(
     Some(lines.join("\n"))
 }
 
+// ---------------------------------------------------------------------------
+// Poll / Vote
+// ---------------------------------------------------------------------------
+
+/// Result of showing a poll.
+#[derive(Debug, PartialEq)]
+pub enum PollResponse {
+    /// No poll active — show help text.
+    Help,
+    /// Formatted poll display message.
+    Message(String),
+}
+
+/// Show the current poll status, or help if no poll is active.
+pub fn poll_show(poll: Option<&ActivePoll>) -> PollResponse {
+    match poll {
+        None => PollResponse::Help,
+        Some(p) => {
+            let total_votes: usize = p.votes.iter().map(|v| v.len()).sum();
+            let mut lines = vec![format!(
+                "📊 [b]{}[/b] (par {}, {} vote{})",
+                p.question,
+                p.creator,
+                total_votes,
+                if total_votes != 1 { "s" } else { "" }
+            )];
+            for (i, opt) in p.options.iter().enumerate() {
+                let count = p.votes[i].len();
+                let bar = "█".repeat(count.min(10));
+                lines.push(format!("  [b]{}.[/b] {} {} ({})", i + 1, opt, bar, count));
+            }
+            lines.push("Vote : [b]!vote <n>[/b] — Fin : [b]!poll end[/b]".to_string());
+            PollResponse::Message(lines.join("\n"))
+        }
+    }
+}
+
+/// End a poll and return the results message with winner(s) marked.
+pub fn poll_end(poll: &ActivePoll) -> String {
+    let total_votes: usize = poll.votes.iter().map(|v| v.len()).sum();
+    let mut lines = vec![format!(
+        "🏁 Sondage terminé : [b]{}[/b] ({} vote{})",
+        poll.question,
+        total_votes,
+        if total_votes != 1 { "s" } else { "" }
+    )];
+    let max_votes = poll.votes.iter().map(|v| v.len()).max().unwrap_or(0);
+    for (i, opt) in poll.options.iter().enumerate() {
+        let count = poll.votes[i].len();
+        let bar = "█".repeat(count.min(10));
+        let winner = if count == max_votes && max_votes > 0 {
+            " 👑"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  [b]{}.[/b] {} {} ({}){}", i + 1, opt, bar, count, winner
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Try to create a poll from a pipe-separated string. Returns `None` with error
+/// message if validation fails, or `Some((poll, announcement))` on success.
+pub fn poll_create(arg: &str, creator: &str) -> Option<(ActivePoll, String)> {
+    let parts: Vec<&str> = arg.split('|').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    if parts.len() > 11 {
+        return None;
+    }
+    let question = truncate_str(parts[0], 200).to_string();
+    let options: Vec<String> = parts[1..].iter().map(|s| truncate_str(s, 100).to_string()).collect();
+    let num_options = options.len();
+    let poll = ActivePoll {
+        question: question.clone(),
+        options: options.clone(),
+        votes: vec![std::collections::HashSet::new(); num_options],
+        creator: creator.to_string(),
+    };
+    let mut lines = vec![format!(
+        "📊 Nouveau sondage par [b]{}[/b] : [b]{}[/b]",
+        creator, question
+    )];
+    for (i, opt) in options.iter().enumerate() {
+        lines.push(format!("  [b]{}.[/b] {}", i + 1, opt));
+    }
+    lines.push("Vote avec [b]!vote <n>[/b]".to_string());
+    Some((poll, lines.join("\n")))
+}
+
+/// Result of a vote attempt.
+#[derive(Debug)]
+pub enum VoteResult {
+    /// Successfully voted — message to broadcast to channel.
+    Voted(String),
+    /// Error — message to reply to the voter.
+    Error(String),
+}
+
+/// Process a vote on a poll. Handles vote change detection.
+pub fn vote(poll: &mut ActivePoll, arg: &str, voter_uid: &str, voter_name: &str) -> VoteResult {
+    if let Ok(n) = arg.parse::<usize>() {
+        if n >= 1 && n <= poll.options.len() {
+            let mut changed_from: Option<usize> = None;
+            for (i, votes) in poll.votes.iter_mut().enumerate() {
+                if votes.remove(voter_uid) {
+                    changed_from = Some(i + 1);
+                }
+            }
+            poll.votes[n - 1].insert(voter_uid.to_string());
+            let msg = if let Some(old) = changed_from {
+                if old == n {
+                    format!(
+                        "✅ {} a voté pour [b]{}. {}[/b]",
+                        voter_name, n, poll.options[n - 1]
+                    )
+                } else {
+                    format!(
+                        "🔄 {} a changé son vote : {} → [b]{}. {}[/b]",
+                        voter_name, old, n, poll.options[n - 1]
+                    )
+                }
+            } else {
+                format!(
+                    "✅ {} a voté pour [b]{}. {}[/b]",
+                    voter_name, n, poll.options[n - 1]
+                )
+            };
+            VoteResult::Voted(msg)
+        } else {
+            VoteResult::Error(format!("❌ Choisis entre 1 et {}", poll.options.len()))
+        }
+    } else {
+        VoteResult::Error("❌ Usage : [b]!vote <numéro>[/b]".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +670,126 @@ mod tests {
         hist.push_back(("12:00".to_string(), "alice".to_string(), long_msg));
         let resp = history_response(&hist, "").unwrap();
         assert!(resp.contains("..."));
+    }
+
+    #[test]
+    fn test_poll_show_no_poll() {
+        assert_eq!(poll_show(None), PollResponse::Help);
+    }
+
+    #[test]
+    fn test_poll_show_active() {
+        let poll = ActivePoll {
+            question: "Best lang?".to_string(),
+            options: vec!["Rust".to_string(), "Go".to_string()],
+            votes: vec![std::collections::HashSet::new(), std::collections::HashSet::new()],
+            creator: "alice".to_string(),
+        };
+        if let PollResponse::Message(msg) = poll_show(Some(&poll)) {
+            assert!(msg.contains("Best lang?"));
+            assert!(msg.contains("alice"));
+            assert!(msg.contains("Rust"));
+        } else {
+            panic!("Expected Message");
+        }
+    }
+
+    #[test]
+    fn test_poll_create_valid() {
+        let result = poll_create("Best? | Rust | Go", "alice");
+        assert!(result.is_some());
+        let (poll, msg) = result.unwrap();
+        assert_eq!(poll.question, "Best?");
+        assert_eq!(poll.options.len(), 2);
+        assert!(msg.contains("Nouveau sondage"));
+    }
+
+    #[test]
+    fn test_poll_create_too_few_options() {
+        assert!(poll_create("Just a question", "alice").is_none());
+    }
+
+    #[test]
+    fn test_poll_end_with_votes() {
+        let mut poll = ActivePoll {
+            question: "Best?".to_string(),
+            options: vec!["A".to_string(), "B".to_string()],
+            votes: vec![{
+                let mut s = std::collections::HashSet::new();
+                s.insert("uid1".to_string());
+                s.insert("uid2".to_string());
+                s
+            }, {
+                let mut s = std::collections::HashSet::new();
+                s.insert("uid3".to_string());
+                s
+            }],
+            creator: "alice".to_string(),
+        };
+        let msg = poll_end(&mut poll);
+        assert!(msg.contains("👑"));
+        assert!(msg.contains("3 votes"));
+    }
+
+    #[test]
+    fn test_vote_valid() {
+        let mut poll = ActivePoll {
+            question: "Q".to_string(),
+            options: vec!["A".to_string(), "B".to_string()],
+            votes: vec![std::collections::HashSet::new(), std::collections::HashSet::new()],
+            creator: "x".to_string(),
+        };
+        let result = vote(&mut poll, "1", "uid1", "alice");
+        if let VoteResult::Voted(msg) = result {
+            assert!(msg.contains("alice"));
+            assert!(msg.contains("A"));
+        } else {
+            panic!("Expected Voted");
+        }
+        assert!(poll.votes[0].contains("uid1"));
+    }
+
+    #[test]
+    fn test_vote_change() {
+        let mut poll = ActivePoll {
+            question: "Q".to_string(),
+            options: vec!["A".to_string(), "B".to_string()],
+            votes: vec![{
+                let mut s = std::collections::HashSet::new();
+                s.insert("uid1".to_string());
+                s
+            }, std::collections::HashSet::new()],
+            creator: "x".to_string(),
+        };
+        let result = vote(&mut poll, "2", "uid1", "alice");
+        if let VoteResult::Voted(msg) = result {
+            assert!(msg.contains("changé"));
+        } else {
+            panic!("Expected Voted with change");
+        }
+        assert!(!poll.votes[0].contains("uid1"));
+        assert!(poll.votes[1].contains("uid1"));
+    }
+
+    #[test]
+    fn test_vote_out_of_range() {
+        let mut poll = ActivePoll {
+            question: "Q".to_string(),
+            options: vec!["A".to_string()],
+            votes: vec![std::collections::HashSet::new()],
+            creator: "x".to_string(),
+        };
+        assert!(matches!(vote(&mut poll, "5", "uid1", "alice"), VoteResult::Error(_)));
+    }
+
+    #[test]
+    fn test_vote_invalid_number() {
+        let mut poll = ActivePoll {
+            question: "Q".to_string(),
+            options: vec!["A".to_string()],
+            votes: vec![std::collections::HashSet::new()],
+            creator: "x".to_string(),
+        };
+        assert!(matches!(vote(&mut poll, "abc", "uid1", "alice"), VoteResult::Error(_)));
     }
 }
