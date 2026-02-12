@@ -1076,6 +1076,75 @@ pub fn duel_check_active(duel: Option<&crate::models::state::ActiveDuel>) -> Opt
     }
 }
 
+// --- TTS option parsing ---
+
+/// Result of parsing `!tts` prefix options (voice:X speed:X).
+#[derive(Debug, PartialEq)]
+pub struct TtsParseResult {
+    pub voice: Option<String>,
+    pub speed: Option<f32>,
+    pub text: String,
+}
+
+/// Parse `voice:XX` and `speed:XX` prefixes from a `!tts` command's raw text.
+/// `valid_voices` should contain lowercase voice names.
+/// Returns the extracted options and the remaining text.
+pub fn tts_parse_options(raw_text: &str, valid_voices: &[String]) -> TtsParseResult {
+    let mut voice: Option<String> = None;
+    let mut speed: Option<f32> = None;
+    let mut remaining = raw_text;
+
+    loop {
+        let trimmed = remaining.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("voice:") {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            let v = &rest[..end];
+            if valid_voices.iter().any(|valid| valid == &v.to_lowercase()) {
+                voice = Some(v.to_lowercase());
+                remaining = &rest[end..];
+                continue;
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("speed:") {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            if let Ok(s) = rest[..end].parse::<f32>() {
+                if (0.25..=4.0).contains(&s) {
+                    speed = Some(s);
+                    remaining = &rest[end..];
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    TtsParseResult {
+        voice,
+        speed,
+        text: remaining.trim().to_string(),
+    }
+}
+
+/// Validation result for parsed TTS input.
+pub enum TtsValidation {
+    Ok,
+    Empty(String),
+    TooLong(String),
+}
+
+/// Validate a parsed TTS result (non-empty, max 500 chars).
+pub fn tts_validate(parsed: &TtsParseResult) -> TtsValidation {
+    if parsed.text.is_empty() {
+        TtsValidation::Empty(
+            "❌ Usage: !tts [voice:nova] [speed:1.5] <texte>\nVoix: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse".to_string()
+        )
+    } else if parsed.text.len() > 500 {
+        TtsValidation::TooLong("❌ Texte trop long (max 500 caractères)".to_string())
+    } else {
+        TtsValidation::Ok
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1858,5 +1927,85 @@ mod tests {
     #[test]
     fn test_duel_check_no_active() {
         assert!(duel_check_active(None).is_none());
+    }
+
+    // --- TTS parse tests ---
+
+    #[test]
+    fn test_tts_parse_no_options() {
+        let voices = vec!["nova".to_string(), "onyx".to_string()];
+        let result = tts_parse_options("hello world", &voices);
+        assert_eq!(result.voice, None);
+        assert_eq!(result.speed, None);
+        assert_eq!(result.text, "hello world");
+    }
+
+    #[test]
+    fn test_tts_parse_voice_only() {
+        let voices = vec!["nova".to_string(), "onyx".to_string()];
+        let result = tts_parse_options("voice:nova hello world", &voices);
+        assert_eq!(result.voice, Some("nova".to_string()));
+        assert_eq!(result.speed, None);
+        assert_eq!(result.text, "hello world");
+    }
+
+    #[test]
+    fn test_tts_parse_speed_only() {
+        let voices = vec!["nova".to_string()];
+        let result = tts_parse_options("speed:1.5 hello world", &voices);
+        assert_eq!(result.voice, None);
+        assert_eq!(result.speed, Some(1.5));
+        assert_eq!(result.text, "hello world");
+    }
+
+    #[test]
+    fn test_tts_parse_both() {
+        let voices = vec!["nova".to_string(), "onyx".to_string()];
+        let result = tts_parse_options("voice:onyx speed:2.0 salut", &voices);
+        assert_eq!(result.voice, Some("onyx".to_string()));
+        assert_eq!(result.speed, Some(2.0));
+        assert_eq!(result.text, "salut");
+    }
+
+    #[test]
+    fn test_tts_parse_invalid_voice() {
+        let voices = vec!["nova".to_string()];
+        let result = tts_parse_options("voice:unknown hello", &voices);
+        assert_eq!(result.voice, None);
+        assert_eq!(result.text, "voice:unknown hello");
+    }
+
+    #[test]
+    fn test_tts_parse_speed_out_of_range() {
+        let voices = vec!["nova".to_string()];
+        let result = tts_parse_options("speed:10.0 hello", &voices);
+        assert_eq!(result.speed, None);
+        assert_eq!(result.text, "speed:10.0 hello");
+    }
+
+    #[test]
+    fn test_tts_parse_empty_text_after_options() {
+        let voices = vec!["nova".to_string()];
+        let result = tts_parse_options("voice:nova", &voices);
+        assert_eq!(result.voice, Some("nova".to_string()));
+        assert_eq!(result.text, "");
+    }
+
+    #[test]
+    fn test_tts_validate_ok() {
+        let r = TtsParseResult { voice: Some("nova".to_string()), speed: Some(1.0), text: "hi".to_string() };
+        assert!(matches!(tts_validate(&r), TtsValidation::Ok));
+    }
+
+    #[test]
+    fn test_tts_validate_empty() {
+        let r = TtsParseResult { voice: None, speed: None, text: "".to_string() };
+        assert!(matches!(tts_validate(&r), TtsValidation::Empty(_)));
+    }
+
+    #[test]
+    fn test_tts_validate_too_long() {
+        let r = TtsParseResult { voice: None, speed: None, text: "a".repeat(501) };
+        assert!(matches!(tts_validate(&r), TtsValidation::TooLong(_)));
     }
 }

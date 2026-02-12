@@ -1927,45 +1927,18 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!tts ") {
-                                                    // Parse optional voice:XX and speed:XX prefixes
                                                     let raw_text = message[5..].trim();
                                                     let valid_voices = valid_voices_for_model(&config.tts_model);
-                                                    let mut tts_voice: Option<String> = None;
-                                                    let mut tts_speed: Option<f32> = None;
-                                                    let mut remaining = raw_text;
-                                                    // Extract options from the start of the text
-                                                    loop {
-                                                        let trimmed = remaining.trim_start();
-                                                        if let Some(rest) = trimmed.strip_prefix("voice:") {
-                                                            let end = rest.find(' ').unwrap_or(rest.len());
-                                                            let v = &rest[..end];
-                                                            if valid_voices.contains(&v.to_lowercase()) {
-                                                                tts_voice = Some(v.to_lowercase());
-                                                                remaining = &rest[end..];
-                                                                continue;
-                                                            }
+                                                    let parsed = commands::tts_parse_options(raw_text, &valid_voices);
+                                                    match commands::tts_validate(&parsed) {
+                                                        commands::TtsValidation::Empty(msg) | commands::TtsValidation::TooLong(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
-                                                        if let Some(rest) = trimmed.strip_prefix("speed:") {
-                                                            let end = rest.find(' ').unwrap_or(rest.len());
-                                                            if let Ok(s) = rest[..end].parse::<f32>() {
-                                                                if (0.25..=4.0).contains(&s) {
-                                                                    tts_speed = Some(s);
-                                                                    remaining = &rest[end..];
-                                                                    continue;
-                                                                }
-                                                            }
-                                                        }
-                                                        break;
-                                                    }
-                                                    let tts_text = remaining.trim().to_string();
-                                                    if tts_text.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            "❌ Usage: !tts [voice:nova] [speed:1.5] <texte>\nVoix: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse".to_string(),
-                                                            &reply_target, reply_sender_id));
-                                                    } else if tts_text.len() > 500 {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Texte trop long (max 500 caractères)".to_string(), &reply_target, reply_sender_id));
-                                                    } else {
-                                                        // Rate limit: max 5 TTS per user per 60s
+                                                        commands::TtsValidation::Ok => {
+                                                    let tts_text = parsed.text;
+                                                    let tts_voice = parsed.voice;
+                                                    let tts_speed = parsed.speed;
+                                                    // Rate limit: max 5 TTS per user per 60s
                                                         let rate_ok = {
                                                             let mut limits = tts_rate_limits.lock().await;
                                                             let now = std::time::Instant::now();
@@ -2017,7 +1990,8 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ TTS désactivé".to_string(), &reply_target, reply_sender_id));
                                                     }
-                                                    } // close rate limit else block
+                                                    } // close TtsValidation::Ok
+                                                    } // close match tts_validate
                                                 } else if msg_lower.starts_with("!replay") {
                                                     let ls = last_spoken_for_ts3.lock().await;
                                                     if let Some((ref text, ref voice, speed)) = *ls {
