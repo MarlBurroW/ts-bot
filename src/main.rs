@@ -1053,17 +1053,12 @@ async fn main() -> Result<()> {
 
                                                 // AFK mention detection: if non-command message mentions an AFK user, notify
                                                 if !message.starts_with('!') {
-                                                    let msg_lower_afk = message.to_lowercase();
                                                     let afk_map = afk_status.lock().await;
-                                                    for (afk_uid, (afk_name, afk_msg)) in afk_map.iter() {
-                                                        if afk_uid == &sender_uid { continue; }
-                                                        if msg_lower_afk.contains(&afk_name.to_lowercase()) {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("💤 {} est AFK : {}", afk_name, afk_msg),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                            break;
-                                                        }
+                                                    if let Some((afk_name, afk_msg)) = commands::afk_check_mentions(&message, &sender_uid, &afk_map) {
+                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
+                                                            format!("💤 {} est AFK : {}", afk_name, afk_msg),
+                                                            &reply_target, reply_sender_id
+                                                        ));
                                                     }
                                                     drop(afk_map);
                                                 }
@@ -1948,23 +1943,26 @@ async fn main() -> Result<()> {
                                                     drop(watchers);
                                                 } else if msg_lower.starts_with("!afk") {
                                                     let arg = message.get(4..).unwrap_or("").trim();
-                                                    let mut afk = afk_status.lock().await;
-                                                    if arg.is_empty() || arg == "off" || arg == "clear" {
-                                                        // Remove AFK status
-                                                        if afk.remove(&sender_uid).is_some() {
-                                                            save_json("data/afk.json", &*afk);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("✅ Tu n'es plus AFK".to_string(), &reply_target, reply_sender_id));
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("ℹ️ Tu n'es pas AFK. Usage : [b]!afk <message>[/b]".to_string(), &reply_target, reply_sender_id));
+                                                    match commands::afk_command(arg, &sender_uid, &sender_name) {
+                                                        commands::AfkResult::Clear { message_if_was_afk, message_if_not_afk, .. } => {
+                                                            let mut afk = afk_status.lock().await;
+                                                            let msg = if afk.remove(&sender_uid).is_some() {
+                                                                save_json("data/afk.json", &*afk);
+                                                                message_if_was_afk
+                                                            } else {
+                                                                message_if_not_afk
+                                                            };
+                                                            drop(afk);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
-                                                    } else {
-                                                        // Set AFK with message (max 200 chars)
-                                                        let afk_msg = truncate_str(arg, 200).to_string();
-                                                        afk.insert(sender_uid.clone(), (sender_name.clone(), afk_msg.clone()));
-                                                        save_json("data/afk.json", &*afk);
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("💤 AFK activé : [b]{}[/b] — tape !afk pour revenir", afk_msg), &reply_target, reply_sender_id));
+                                                        commands::AfkResult::Set { message: msg, afk_entry } => {
+                                                            let mut afk = afk_status.lock().await;
+                                                            afk.insert(sender_uid.clone(), afk_entry);
+                                                            save_json("data/afk.json", &*afk);
+                                                            drop(afk);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
                                                     }
-                                                    drop(afk);
                                                 } else if msg_lower.starts_with("!poll") {
                                                     let arg = message.get(5..).unwrap_or("").trim();
                                                     let poll_ref = active_poll.clone();
@@ -2054,26 +2052,24 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!lang") {
-                                                    let parts: Vec<&str> = message.split_whitespace().collect();
-                                                    if parts.len() < 2 || parts[1] == "auto" {
-                                                        // Reset to auto-detect
-                                                        let mut overrides = language_overrides.lock().await;
-                                                        overrides.remove(&sender_uid);
-                                                        let _ = save_language_prefs(&overrides);
-                                                        drop(overrides);
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("🌍 Langue : auto-détection".to_string(), &reply_target, reply_sender_id));
-                                                    } else {
-                                                        let lang_code = parts[1].to_lowercase();
-                                                        // Validate: must be 2-letter ISO 639-1
-                                                        let valid_langs = ["fr", "en", "de", "es", "it", "pt", "nl", "ru", "ja", "ko", "zh", "ar", "pl", "cs", "sv", "da", "fi", "no", "tr", "uk", "ro", "hu", "el", "he", "th", "vi", "id", "ms", "hi", "bn"];
-                                                        if valid_langs.contains(&lang_code.as_str()) {
+                                                    let arg = message.split_whitespace().nth(1).unwrap_or("");
+                                                    match commands::lang_command(arg) {
+                                                        commands::LangResult::Reset { message: msg } => {
                                                             let mut overrides = language_overrides.lock().await;
-                                                            overrides.insert(sender_uid.clone(), lang_code.clone());
+                                                            overrides.remove(&sender_uid);
                                                             let _ = save_language_prefs(&overrides);
                                                             drop(overrides);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("🌍 Langue forcée : [b]{}[/b]", lang_code), &reply_target, reply_sender_id));
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", lang_code), &reply_target, reply_sender_id));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::LangResult::Set { message: msg, code } => {
+                                                            let mut overrides = language_overrides.lock().await;
+                                                            overrides.insert(sender_uid.clone(), code);
+                                                            let _ = save_language_prefs(&overrides);
+                                                            drop(overrides);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::LangResult::Invalid { message: msg } => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!tts ") {

@@ -5,6 +5,8 @@
 
 use rand::Rng;
 
+use std::collections::HashMap;
+
 use crate::models::{ActivePoll, BotStats, Reminder};
 use crate::persistence::{load_json, save_json};
 use crate::utils::{format_duration_ms, format_uptime, parse_duration_str, truncate_str};
@@ -682,6 +684,89 @@ pub fn remind_command(
     }
 }
 
+// --- AFK command ---
+
+/// Result of the `!afk` command.
+pub enum AfkResult {
+    /// User wants to set AFK with a message.
+    Set { message: String, afk_entry: (String, String) },
+    /// User wants to clear AFK (empty arg, "off", or "clear").
+    /// `was_afk` is always false here — caller checks actual state.
+    Clear { message_if_was_afk: String, message_if_not_afk: String, was_afk: bool },
+}
+
+/// Pure logic for `!afk <arg>`. Returns what to do; caller handles state mutation.
+pub fn afk_command(arg: &str, _uid: &str, name: &str) -> AfkResult {
+    let arg = arg.trim();
+    if arg.is_empty() || arg == "off" || arg == "clear" {
+        AfkResult::Clear {
+            message_if_was_afk: "✅ Tu n'es plus AFK".to_string(),
+            message_if_not_afk: "ℹ️ Tu n'es pas AFK. Usage : [b]!afk <message>[/b]".to_string(),
+            was_afk: false, // placeholder — caller determines this
+        }
+    } else {
+        let afk_msg = truncate_str(arg, 200).to_string();
+        AfkResult::Set {
+            message: format!("💤 AFK activé : [b]{}[/b] — tape !afk pour revenir", afk_msg),
+            afk_entry: (name.to_string(), afk_msg),
+        }
+    }
+}
+
+/// Check if a non-command message mentions any AFK user.
+/// Returns the first matching (name, afk_message) or None.
+pub fn afk_check_mentions(
+    message: &str,
+    sender_uid: &str,
+    afk_map: &HashMap<String, (String, String)>,
+) -> Option<(String, String)> {
+    let msg_lower = message.to_lowercase();
+    for (afk_uid, (afk_name, afk_msg)) in afk_map.iter() {
+        if afk_uid == sender_uid { continue; }
+        if msg_lower.contains(&afk_name.to_lowercase()) {
+            return Some((afk_name.clone(), afk_msg.clone()));
+        }
+    }
+    None
+}
+
+// --- Lang command ---
+
+/// Result of the `!lang` command.
+pub enum LangResult {
+    /// Reset to auto-detection.
+    Reset { message: String },
+    /// Set a specific language.
+    Set { message: String, code: String },
+    /// Invalid language code.
+    Invalid { message: String },
+}
+
+const VALID_LANGS: &[&str] = &[
+    "fr", "en", "de", "es", "it", "pt", "nl", "ru", "ja", "ko", "zh", "ar",
+    "pl", "cs", "sv", "da", "fi", "no", "tr", "uk", "ro", "hu", "el", "he",
+    "th", "vi", "id", "ms", "hi", "bn",
+];
+
+/// Pure logic for `!lang <code>`. Returns what to do; caller handles state mutation.
+pub fn lang_command(arg: &str) -> LangResult {
+    let arg = arg.trim().to_lowercase();
+    if arg.is_empty() || arg == "auto" {
+        LangResult::Reset {
+            message: "🌍 Langue : auto-détection".to_string(),
+        }
+    } else if VALID_LANGS.contains(&arg.as_str()) {
+        LangResult::Set {
+            message: format!("🌍 Langue forcée : [b]{}[/b]", arg),
+            code: arg,
+        }
+    } else {
+        LangResult::Invalid {
+            message: format!("❌ Langue inconnue : {}. Ex: !lang fr, !lang en, !lang auto", arg),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1144,5 +1229,91 @@ mod tests {
         assert!(message.contains("2 notification"));
         assert!(changed);
         assert!(watchers.is_empty());
+    }
+
+    // --- AFK tests ---
+
+    #[test]
+    fn test_afk_set() {
+        let r = afk_command("Going for lunch", "uid1", "alice");
+        let AfkResult::Set { message, afk_entry } = r else { panic!("expected Set") };
+        assert!(message.contains("AFK activé"));
+        assert!(message.contains("Going for lunch"));
+        assert_eq!(afk_entry.0, "alice");
+    }
+
+    #[test]
+    fn test_afk_clear_when_not_afk() {
+        let afk: HashMap<String, (String, String)> = HashMap::new();
+        let r = afk_command("", "uid1", "alice");
+        // Without existing AFK, this is a Clear variant
+        let AfkResult::Clear { was_afk, .. } = r else { panic!("expected Clear") };
+        assert!(!was_afk);
+    }
+
+    #[test]
+    fn test_afk_clear_explicit() {
+        let r = afk_command("off", "uid1", "alice");
+        let AfkResult::Clear { was_afk, .. } = r else { panic!("expected Clear") };
+        // was_afk is determined by caller — the pure function just signals intent
+        assert!(!was_afk); // we can't check this without state, but the variant is correct
+    }
+
+    #[test]
+    fn test_afk_mention_detection() {
+        let mut afk: HashMap<String, (String, String)> = HashMap::new();
+        afk.insert("uid2".to_string(), ("Bob".to_string(), "eating".to_string()));
+        let result = afk_check_mentions("hey bob are you there?", "uid1", &afk);
+        assert!(result.is_some());
+        let (name, msg) = result.unwrap();
+        assert_eq!(name, "Bob");
+        assert_eq!(msg, "eating");
+    }
+
+    #[test]
+    fn test_afk_mention_no_self() {
+        let mut afk: HashMap<String, (String, String)> = HashMap::new();
+        afk.insert("uid1".to_string(), ("Alice".to_string(), "brb".to_string()));
+        let result = afk_check_mentions("alice says hi", "uid1", &afk);
+        assert!(result.is_none()); // should not match own AFK
+    }
+
+    #[test]
+    fn test_afk_mention_no_match() {
+        let mut afk: HashMap<String, (String, String)> = HashMap::new();
+        afk.insert("uid2".to_string(), ("Bob".to_string(), "eating".to_string()));
+        let result = afk_check_mentions("hello everyone", "uid1", &afk);
+        assert!(result.is_none());
+    }
+
+    // --- Lang tests ---
+
+    #[test]
+    fn test_lang_auto() {
+        let r = lang_command("auto");
+        let LangResult::Reset { message } = r else { panic!("expected Reset") };
+        assert!(message.contains("auto"));
+    }
+
+    #[test]
+    fn test_lang_valid() {
+        let r = lang_command("fr");
+        let LangResult::Set { message, code } = r else { panic!("expected Set") };
+        assert_eq!(code, "fr");
+        assert!(message.contains("fr"));
+    }
+
+    #[test]
+    fn test_lang_invalid() {
+        let r = lang_command("xx");
+        let LangResult::Invalid { message } = r else { panic!("expected Invalid") };
+        assert!(message.contains("xx"));
+    }
+
+    #[test]
+    fn test_lang_empty() {
+        let r = lang_command("");
+        let LangResult::Reset { message } = r else { panic!("expected Reset") };
+        assert!(message.contains("auto"));
     }
 }
