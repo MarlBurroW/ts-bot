@@ -1482,89 +1482,45 @@ async fn main() -> Result<()> {
                                                         }
                                                     });
                                                 } else if msg_lower.starts_with("!volume") || msg_lower.starts_with("!vol") {
-                                                    let parts: Vec<&str> = message.split_whitespace().collect();
-                                                    if parts.len() < 2 {
-                                                        // Show current volume (default 100 if TTS disabled)
-                                                        let vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🔊 Volume actuel : {}%", vol),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
-                                                    } else if let Ok(vol) = parts[1].trim_end_matches('%').parse::<u8>() {
-                                                        if vol > 200 {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Volume entre 0 et 200 (100 = normal)".to_string(),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
-                                                        } else {
-                                                            if let Some(ref player) = audio_player {
-                                                                player.set_volume(vol);
-                                                            }
-                                                            // Persist volume
-                                                            save_bot_state_field("volume", &vol);
-                                                            let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("{} Volume réglé à {}%", emoji, vol),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
+                                                    let arg = message.split_whitespace().nth(1).unwrap_or("");
+                                                    let current_vol = audio_player.as_ref().map(|p| p.volume()).unwrap_or(100);
+                                                    match commands::volume_command(arg, current_vol) {
+                                                        commands::VolumeResult::Show(msg) | commands::VolumeResult::Invalid(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
-                                                    } else {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            "❌ Usage: !volume [0-200]".to_string(),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
+                                                        commands::VolumeResult::Set { message: msg, value } => {
+                                                            if let Some(ref player) = audio_player {
+                                                                player.set_volume(value);
+                                                            }
+                                                            save_bot_state_field("volume", &value);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
                                                     }
                                                 } else if msg_lower.starts_with("!voice") {
                                                     let valid_voices = valid_voices_for_model(&config.tts_model);
-                                                    let parts: Vec<&str> = message.split_whitespace().collect();
-                                                    if parts.len() < 2 {
-                                                        // Show current default voice
-                                                        let current = default_voice.read().unwrap().clone();
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🎙️ Voix par défaut : [b]{}[/b]\nVoix disponibles : {}", current, valid_voices.join(", ")),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
-                                                    } else {
-                                                        let requested = parts[1].to_lowercase();
-                                                        if valid_voices.contains(&requested) {
-                                                            *default_voice.write().unwrap() = requested.clone();
-                                                            // Persist
-                                                            save_bot_state_field("voice", &requested);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("❌ Voix inconnue : \"{}\"\nVoix disponibles : {}", parts[1], valid_voices.join(", ")),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
+                                                    let arg = message.split_whitespace().nth(1).unwrap_or("");
+                                                    let current = default_voice.read().unwrap().clone();
+                                                    match commands::voice_command(arg, &current, &valid_voices) {
+                                                        commands::VoiceResult::Show(msg) | commands::VoiceResult::Invalid(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::VoiceResult::Set { message: msg, voice } => {
+                                                            *default_voice.write().unwrap() = voice.clone();
+                                                            save_bot_state_field("voice", &voice);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!speed") {
-                                                    let parts: Vec<&str> = message.split_whitespace().collect();
-                                                    if parts.len() < 2 {
-                                                        let current = *default_speed.read().unwrap();
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🏎️ Vitesse TTS par défaut : [b]{:.2}x[/b]\nRange : 0.25 — 4.0 (1.0 = normal)", current),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
-                                                    } else {
-                                                        match parts[1].parse::<f32>() {
-                                                            Ok(s) if (0.25..=4.0).contains(&s) => {
-                                                                *default_speed.write().unwrap() = s;
-                                                                save_bot_state_field("speed", &s);
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    format!("🏎️ Vitesse TTS changée en [b]{:.2}x[/b]", s),
-                                                                    &reply_target, reply_sender_id,
-                                                                ));
-                                                            }
-                                                            _ => {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Vitesse invalide. Range : 0.25 — 4.0 (ex: !speed 1.0, !speed 1.3)".to_string(),
-                                                                    &reply_target, reply_sender_id,
-                                                                ));
-                                                            }
+                                                    let arg = message.split_whitespace().nth(1).unwrap_or("");
+                                                    let current = *default_speed.read().unwrap();
+                                                    match commands::speed_command(arg, current) {
+                                                        commands::SpeedResult::Show(msg) | commands::SpeedResult::Invalid(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::SpeedResult::Set { message: msg, value } => {
+                                                            *default_speed.write().unwrap() = value;
+                                                            save_bot_state_field("speed", &value);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
                                                     }
                                                 } else if msg_lower == "!mute" {

@@ -836,6 +836,109 @@ pub fn timeout_command(arg: &str, current_ms: u64) -> TimeoutResult {
     }
 }
 
+// --- Volume, Voice, Speed commands ---
+
+/// Result of `!volume` command.
+#[derive(Debug, PartialEq)]
+pub enum VolumeResult {
+    /// Show current volume.
+    Show(String),
+    /// Set volume to this value + response message.
+    Set { message: String, value: u8 },
+    /// Invalid input.
+    Invalid(String),
+}
+
+/// Pure logic for `!volume [0-200]`.
+/// `current_vol`: current volume percentage.
+pub fn volume_command(arg: &str, current_vol: u8) -> VolumeResult {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return VolumeResult::Show(format!("🔊 Volume actuel : {}%", current_vol));
+    }
+    match arg.trim_end_matches('%').parse::<u8>() {
+        Ok(vol) if vol > 200 => VolumeResult::Invalid("❌ Volume entre 0 et 200 (100 = normal)".to_string()),
+        Ok(vol) => {
+            let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
+            VolumeResult::Set {
+                message: format!("{} Volume réglé à {}%", emoji, vol),
+                value: vol,
+            }
+        }
+        Err(_) => VolumeResult::Invalid("❌ Usage: !volume [0-200]".to_string()),
+    }
+}
+
+/// Result of `!voice` command.
+#[derive(Debug, PartialEq)]
+pub enum VoiceResult {
+    /// Show current voice + available voices.
+    Show(String),
+    /// Set voice to this value + response message.
+    Set { message: String, voice: String },
+    /// Invalid voice name.
+    Invalid(String),
+}
+
+/// Pure logic for `!voice [name]`.
+/// `current_voice`: current default voice, `valid_voices`: list of valid voice names.
+pub fn voice_command(arg: &str, current_voice: &str, valid_voices: &[String]) -> VoiceResult {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        let voices_str = valid_voices.join(", ");
+        return VoiceResult::Show(format!(
+            "🎙️ Voix par défaut : [b]{}[/b]\nVoix disponibles : {}",
+            current_voice, voices_str
+        ));
+    }
+    let requested = arg.split_whitespace().next().unwrap_or("").to_lowercase();
+    if valid_voices.contains(&requested) {
+        VoiceResult::Set {
+            message: format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
+            voice: requested,
+        }
+    } else {
+        let voices_str = valid_voices.join(", ");
+        VoiceResult::Invalid(format!(
+            "❌ Voix inconnue : \"{}\"\nVoix disponibles : {}",
+            arg.split_whitespace().next().unwrap_or(arg),
+            voices_str
+        ))
+    }
+}
+
+/// Result of `!speed` command.
+#[derive(Debug, PartialEq)]
+pub enum SpeedResult {
+    /// Show current speed.
+    Show(String),
+    /// Set speed to this value + response message.
+    Set { message: String, value: f32 },
+    /// Invalid input.
+    Invalid(String),
+}
+
+/// Pure logic for `!speed [0.25-4.0]`.
+/// `current_speed`: current TTS speed.
+pub fn speed_command(arg: &str, current_speed: f32) -> SpeedResult {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return SpeedResult::Show(format!(
+            "🏎️ Vitesse TTS par défaut : [b]{:.2}x[/b]\nRange : 0.25 — 4.0 (1.0 = normal)",
+            current_speed
+        ));
+    }
+    match arg.split_whitespace().next().unwrap_or("").parse::<f32>() {
+        Ok(s) if (0.25..=4.0).contains(&s) => SpeedResult::Set {
+            message: format!("🏎️ Vitesse TTS changée en [b]{:.2}x[/b]", s),
+            value: s,
+        },
+        _ => SpeedResult::Invalid(
+            "❌ Vitesse invalide. Range : 0.25 — 4.0 (ex: !speed 1.0, !speed 1.3)".to_string(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1445,5 +1548,96 @@ mod tests {
     fn test_timeout_invalid() {
         let TimeoutResult::Invalid(msg) = timeout_command("abc", 1500) else { panic!("expected Invalid") };
         assert!(msg.contains("Usage"));
+    }
+
+    // --- Volume tests ---
+
+    #[test]
+    fn test_volume_show() {
+        let VolumeResult::Show(msg) = volume_command("", 75) else { panic!("expected Show") };
+        assert!(msg.contains("75%"));
+    }
+
+    #[test]
+    fn test_volume_set_valid() {
+        let VolumeResult::Set { message, value } = volume_command("80", 50) else { panic!("expected Set") };
+        assert_eq!(value, 80);
+        assert!(message.contains("80%"));
+    }
+
+    #[test]
+    fn test_volume_set_with_percent() {
+        let VolumeResult::Set { value, .. } = volume_command("120%", 50) else { panic!("expected Set") };
+        assert_eq!(value, 120);
+    }
+
+    #[test]
+    fn test_volume_set_zero() {
+        let VolumeResult::Set { message, value } = volume_command("0", 50) else { panic!("expected Set") };
+        assert_eq!(value, 0);
+        assert!(message.contains("🔇"));
+    }
+
+    #[test]
+    fn test_volume_too_high() {
+        let VolumeResult::Invalid(msg) = volume_command("250", 50) else { panic!("expected Invalid") };
+        assert!(msg.contains("200"));
+    }
+
+    #[test]
+    fn test_volume_invalid_text() {
+        let VolumeResult::Invalid(msg) = volume_command("loud", 50) else { panic!("expected Invalid") };
+        assert!(msg.contains("Usage"));
+    }
+
+    // --- Voice tests ---
+
+    #[test]
+    fn test_voice_show() {
+        let voices = vec!["alloy".to_string(), "nova".to_string(), "onyx".to_string()];
+        let VoiceResult::Show(msg) = voice_command("", "nova", &voices) else { panic!("expected Show") };
+        assert!(msg.contains("nova"));
+        assert!(msg.contains("alloy"));
+    }
+
+    #[test]
+    fn test_voice_set_valid() {
+        let voices = vec!["alloy".to_string(), "nova".to_string(), "onyx".to_string()];
+        let VoiceResult::Set { voice, message } = voice_command("alloy", "nova", &voices) else { panic!("expected Set") };
+        assert_eq!(voice, "alloy");
+        assert!(message.contains("alloy"));
+    }
+
+    #[test]
+    fn test_voice_invalid() {
+        let voices = vec!["alloy".to_string(), "nova".to_string()];
+        let VoiceResult::Invalid(msg) = voice_command("siri", "nova", &voices) else { panic!("expected Invalid") };
+        assert!(msg.contains("siri"));
+        assert!(msg.contains("alloy"));
+    }
+
+    // --- Speed tests ---
+
+    #[test]
+    fn test_speed_show() {
+        let SpeedResult::Show(msg) = speed_command("", 1.15) else { panic!("expected Show") };
+        assert!(msg.contains("1.15"));
+    }
+
+    #[test]
+    fn test_speed_set_valid() {
+        let SpeedResult::Set { value, message } = speed_command("1.5", 1.0) else { panic!("expected Set") };
+        assert!((value - 1.5).abs() < 0.001);
+        assert!(message.contains("1.50"));
+    }
+
+    #[test]
+    fn test_speed_invalid_range() {
+        let SpeedResult::Invalid(_) = speed_command("5.0", 1.0) else { panic!("expected Invalid") };
+    }
+
+    #[test]
+    fn test_speed_invalid_text() {
+        let SpeedResult::Invalid(_) = speed_command("fast", 1.0) else { panic!("expected Invalid") };
     }
 }
