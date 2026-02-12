@@ -939,6 +939,143 @@ pub fn speed_command(arg: &str, current_speed: f32) -> SpeedResult {
     }
 }
 
+// --- !roulette ---
+
+pub enum RouletteResult {
+    /// Player dies — message + they should be kicked
+    Bang(String),
+    /// Player survives — message only
+    Survived(String),
+}
+
+/// Russian roulette: 1/6 chance of death. Returns the message and whether the player should be kicked.
+pub fn roulette_command(name: &str) -> RouletteResult {
+    use rand::Rng;
+    let chamber = rand::thread_rng().gen_range(1..=6);
+    if chamber == 1 {
+        RouletteResult::Bang(format!(
+            "🔫 {} appuie sur la gâchette...\n💀 BANG ! {} est mort(e) !",
+            name, name
+        ))
+    } else {
+        let messages = [
+            format!(
+                "🔫 {} appuie sur la gâchette...\n😮💨 *click* — Pas cette fois ! ({}/6 chances de survie)",
+                name,
+                6 - 1
+            ),
+            format!(
+                "🔫 {} tente sa chance...\n😎 Le barillet était vide. Tu vis encore.",
+                name
+            ),
+            format!("🔫 *click*\n🍀 {} a de la chance... pour l'instant.", name),
+        ];
+        let idx = rand::thread_rng().gen_range(0..messages.len());
+        RouletteResult::Survived(messages[idx].clone())
+    }
+}
+
+// --- !duel ---
+
+pub enum DuelAcceptResult {
+    NotYourDuel,
+    Expired,
+    /// (message, loser_clid) — None loser_clid means tie
+    Resolved { message: String, loser_clid: Option<u16> },
+}
+
+pub enum DuelDeclineResult {
+    NotYourDuel,
+    NoDuel,
+    Declined(String),
+}
+
+pub enum DuelStatusResult {
+    Pending(String),
+    ExpiredOrNone(String),
+}
+
+pub enum DuelChallengeResult {
+    AlreadyActive(String),
+    NoPendingDuel,
+}
+
+/// Handle `!duel accept` — resolve the duel with dice rolls
+pub fn duel_accept(
+    duel: &crate::models::state::ActiveDuel,
+    sender_uid: &str,
+) -> DuelAcceptResult {
+    use rand::Rng;
+    if duel.target_uid != sender_uid {
+        return DuelAcceptResult::NotYourDuel;
+    }
+    if duel.created.elapsed().as_secs() > 30 {
+        return DuelAcceptResult::Expired;
+    }
+
+    let roll1: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
+    let roll2: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
+
+    let (winner, loser, loser_clid) = if roll1 > roll2 {
+        (&duel.challenger_name, &duel.target_name, Some(duel.target_clid))
+    } else if roll2 > roll1 {
+        (&duel.target_name, &duel.challenger_name, Some(duel.challenger_clid))
+    } else {
+        let msg = format!(
+            "⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🤝 Égalité ! Personne ne meurt... cette fois.",
+            duel.challenger_name, roll1, duel.target_name, roll2
+        );
+        return DuelAcceptResult::Resolved { message: msg, loser_clid: None };
+    };
+
+    let msg = format!(
+        "⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🏆 {} gagne ! 💀 {} est éliminé(e) !",
+        duel.challenger_name, roll1, duel.target_name, roll2, winner, loser
+    );
+    DuelAcceptResult::Resolved { message: msg, loser_clid }
+}
+
+/// Handle `!duel decline`
+pub fn duel_decline(
+    duel: &crate::models::state::ActiveDuel,
+    sender_uid: &str,
+) -> DuelDeclineResult {
+    if duel.target_uid != sender_uid {
+        DuelDeclineResult::NotYourDuel
+    } else {
+        DuelDeclineResult::Declined(format!(
+            "🏳️ {} refuse le duel de {}. Lâche !",
+            duel.target_name, duel.challenger_name
+        ))
+    }
+}
+
+/// Handle `!duel` with no args — show status
+pub fn duel_status(duel: Option<&crate::models::state::ActiveDuel>) -> DuelStatusResult {
+    let usage = "❌ Usage: !duel <nom> — défier quelqu'un en duel (2d6, perdant = kick)".to_string();
+    match duel {
+        Some(d) if d.created.elapsed().as_secs() <= 30 => {
+            let remaining = 30 - d.created.elapsed().as_secs();
+            DuelStatusResult::Pending(format!(
+                "⚔️ Duel en attente : {} vs {} ({}s restantes)\n{} doit taper [b]!duel accept[/b] ou [b]!duel non[/b]",
+                d.challenger_name, d.target_name, remaining, d.target_name
+            ))
+        }
+        _ => DuelStatusResult::ExpiredOrNone(usage),
+    }
+}
+
+/// Check if there's an active non-expired duel blocking a new challenge
+pub fn duel_check_active(duel: Option<&crate::models::state::ActiveDuel>) -> Option<String> {
+    match duel {
+        Some(d) if d.created.elapsed().as_secs() <= 30 => Some(format!(
+            "❌ Un duel est déjà en cours : {} vs {} ! Attends qu'il expire.",
+            d.challenger_name, d.target_name
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1639,5 +1776,87 @@ mod tests {
     #[test]
     fn test_speed_invalid_text() {
         let SpeedResult::Invalid(_) = speed_command("fast", 1.0) else { panic!("expected Invalid") };
+    }
+
+    // --- roulette tests ---
+
+    #[test]
+    fn test_roulette_returns_result() {
+        // Run multiple times to cover both branches probabilistically
+        let mut saw_bang = false;
+        let mut saw_survived = false;
+        for _ in 0..100 {
+            match roulette_command("TestUser") {
+                RouletteResult::Bang(msg) => {
+                    assert!(msg.contains("BANG"));
+                    assert!(msg.contains("TestUser"));
+                    saw_bang = true;
+                }
+                RouletteResult::Survived(msg) => {
+                    assert!(msg.contains("TestUser"));
+                    saw_survived = true;
+                }
+            }
+        }
+        assert!(saw_bang, "should have seen at least one Bang in 100 rolls");
+        assert!(saw_survived, "should have seen at least one Survived in 100 rolls");
+    }
+
+    // --- duel tests ---
+
+    #[test]
+    fn test_duel_decline_not_your_duel() {
+        let duel = crate::models::state::ActiveDuel {
+            challenger_name: "Alice".to_string(),
+            challenger_uid: "uid_a".to_string(),
+            challenger_clid: 1,
+            target_name: "Bob".to_string(),
+            target_uid: "uid_b".to_string(),
+            target_clid: 2,
+            created: std::time::Instant::now(),
+        };
+        let DuelDeclineResult::NotYourDuel = duel_decline(&duel, "uid_c") else { panic!("expected NotYourDuel") };
+    }
+
+    #[test]
+    fn test_duel_decline_ok() {
+        let duel = crate::models::state::ActiveDuel {
+            challenger_name: "Alice".to_string(),
+            challenger_uid: "uid_a".to_string(),
+            challenger_clid: 1,
+            target_name: "Bob".to_string(),
+            target_uid: "uid_b".to_string(),
+            target_clid: 2,
+            created: std::time::Instant::now(),
+        };
+        let DuelDeclineResult::Declined(msg) = duel_decline(&duel, "uid_b") else { panic!("expected Declined") };
+        assert!(msg.contains("Bob"));
+        assert!(msg.contains("Lâche"));
+    }
+
+    #[test]
+    fn test_duel_status_none() {
+        let DuelStatusResult::ExpiredOrNone(_) = duel_status(None) else { panic!("expected ExpiredOrNone") };
+    }
+
+    #[test]
+    fn test_duel_status_pending() {
+        let duel = crate::models::state::ActiveDuel {
+            challenger_name: "Alice".to_string(),
+            challenger_uid: "uid_a".to_string(),
+            challenger_clid: 1,
+            target_name: "Bob".to_string(),
+            target_uid: "uid_b".to_string(),
+            target_clid: 2,
+            created: std::time::Instant::now(),
+        };
+        let DuelStatusResult::Pending(msg) = duel_status(Some(&duel)) else { panic!("expected Pending") };
+        assert!(msg.contains("Alice"));
+        assert!(msg.contains("Bob"));
+    }
+
+    #[test]
+    fn test_duel_check_no_active() {
+        assert!(duel_check_active(None).is_none());
     }
 }

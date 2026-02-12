@@ -6,7 +6,6 @@ use ts3_bot::utils::{truncate_str, format_uptime, format_connection_duration, sa
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
-use rand::Rng;
 use ts3_bot::websocket::TtsRequest;
 use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, TtsSynthesizer};
 use tracing::{error, info, warn, debug};
@@ -1587,48 +1586,28 @@ async fn main() -> Result<()> {
                                                     };
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!roulette") {
-                                                    // Russian roulette: 1/6 chance of channel kick
-                                                    let chamber = rand::thread_rng().gen_range(1..=6);
-                                                    let name = invoker.name.clone();
-
-                                                    if chamber == 1 {
-                                                        // BANG! — kick from channel
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🔫 {} appuie sur la gâchette...\n💀 BANG ! {} est mort(e) !", name, name),
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                        // Kick the user from the channel
-                                                        let mut sender_for_kick = ts3_sender.clone();
-                                                        let kick_clid = reply_sender_id;
-                                                        tokio::spawn(async move {
-                                                            // Small delay so they see the message before getting kicked
-                                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                                            use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                                                            let mut cmd = OutCommand::new(
-                                                                Direction::C2S, Flags::empty(),
-                                                                PacketType::Command, "clientkick",
-                                                            );
-                                                            cmd.write_arg("clid", &kick_clid);
-                                                            cmd.write_arg("reasonid", &4u32); // 4 = kick from channel
-                                                            cmd.write_arg("reasonmsg", &"💀 Roulette russe !");
-                                                            if let Err(e) = sender_for_kick.send_command(cmd).await {
-                                                                warn!("Failed to kick for roulette: {:?}", e);
-                                                            }
-                                                        });
-                                                    } else {
-                                                        let messages = [
-                                                            format!("🔫 {} appuie sur la gâchette...\n😮‍💨 *click* — Pas cette fois ! ({}/6 chances de survie)", name, 6 - 1),
-                                                            format!("🔫 {} tente sa chance...\n😎 Le barillet était vide. Tu vis encore.", name),
-                                                            format!("🔫 *click*\n🍀 {} a de la chance... pour l'instant.", name),
-                                                        ];
-                                                        let idx = rand::thread_rng().gen_range(0..messages.len());
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            messages[idx].clone(),
-                                                            &reply_target, reply_sender_id
-                                                        ));
+                                                    match commands::roulette_command(&invoker.name) {
+                                                        commands::RouletteResult::Bang(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                            let mut sender_for_kick = ts3_sender.clone();
+                                                            let kick_clid = reply_sender_id;
+                                                            tokio::spawn(async move {
+                                                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                                use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientkick");
+                                                                cmd.write_arg("clid", &kick_clid);
+                                                                cmd.write_arg("reasonid", &4u32);
+                                                                cmd.write_arg("reasonmsg", &"💀 Roulette russe !");
+                                                                if let Err(e) = sender_for_kick.send_command(cmd).await {
+                                                                    warn!("Failed to kick for roulette: {:?}", e);
+                                                                }
+                                                            });
+                                                        }
+                                                        commands::RouletteResult::Survived(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
                                                     }
                                                 } else if msg_lower.starts_with("!duel") {
-                                                    // Duel system: challenge someone, dice roll, loser gets channel-kicked
                                                     let args = message.trim()[5..].trim().to_string();
                                                     let args_lower = args.to_lowercase();
                                                     let duel_ref = active_duel.clone();
@@ -1636,125 +1615,74 @@ async fn main() -> Result<()> {
                                                     if args_lower == "accept" || args_lower == "ok" || args_lower == "oui" {
                                                         let mut duel_guard = duel_ref.lock().await;
                                                         if let Some(duel) = duel_guard.as_ref() {
-                                                            if duel.target_uid != sender_uid {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Ce duel ne te concerne pas !".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else if duel.created.elapsed().as_secs() > 30 {
-                                                                *duel_guard = None;
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "⏰ Le duel a expiré !".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else {
-                                                                let challenger_name = duel.challenger_name.clone();
-                                                                let target_name = duel.target_name.clone();
-                                                                let challenger_clid = duel.challenger_clid;
-                                                                let target_clid = duel.target_clid;
-                                                                *duel_guard = None;
-                                                                drop(duel_guard);
-
-                                                                let roll1: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
-                                                                let roll2: u8 = rand::thread_rng().gen_range(1..=6) + rand::thread_rng().gen_range(1..=6);
-
-                                                                let (winner, loser, loser_clid) = if roll1 > roll2 {
-                                                                    (&challenger_name, &target_name, target_clid)
-                                                                } else if roll2 > roll1 {
-                                                                    (&target_name, &challenger_name, challenger_clid)
-                                                                } else {
-                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                        format!("⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🤝 Égalité ! Personne ne meurt... cette fois.", challenger_name, roll1, target_name, roll2),
-                                                                        &reply_target, reply_sender_id
-                                                                    ));
-                                                                    continue;
-                                                                };
-
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    format!("⚔️ DUEL : {} 🎲{} vs {} 🎲{}\n🏆 {} gagne ! 💀 {} est éliminé(e) !", challenger_name, roll1, target_name, roll2, winner, loser),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-
-                                                                let mut sender_for_kick = ts3_sender.clone();
-                                                                tokio::spawn(async move {
-                                                                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                                                    use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                                                                    let mut cmd = OutCommand::new(
-                                                                        Direction::C2S, Flags::empty(),
-                                                                        PacketType::Command, "clientkick",
-                                                                    );
-                                                                    cmd.write_arg("clid", &loser_clid);
-                                                                    cmd.write_arg("reasonid", &4u32);
-                                                                    cmd.write_arg("reasonmsg", &"💀 Perdu au duel !");
-                                                                    if let Err(e) = sender_for_kick.send_command(cmd).await {
-                                                                        warn!("Failed to kick duel loser: {:?}", e);
+                                                            match commands::duel_accept(duel, &sender_uid) {
+                                                                commands::DuelAcceptResult::NotYourDuel => {
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Ce duel ne te concerne pas !".to_string(), &reply_target, reply_sender_id));
+                                                                }
+                                                                commands::DuelAcceptResult::Expired => {
+                                                                    *duel_guard = None;
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("⏰ Le duel a expiré !".to_string(), &reply_target, reply_sender_id));
+                                                                }
+                                                                commands::DuelAcceptResult::Resolved { message: msg, loser_clid } => {
+                                                                    *duel_guard = None;
+                                                                    drop(duel_guard);
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                                    if let Some(loser_clid) = loser_clid {
+                                                                        let mut sender_for_kick = ts3_sender.clone();
+                                                                        tokio::spawn(async move {
+                                                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                                            use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+                                                                            let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientkick");
+                                                                            cmd.write_arg("clid", &loser_clid);
+                                                                            cmd.write_arg("reasonid", &4u32);
+                                                                            cmd.write_arg("reasonmsg", &"💀 Perdu au duel !");
+                                                                            if let Err(e) = sender_for_kick.send_command(cmd).await {
+                                                                                warn!("Failed to kick duel loser: {:?}", e);
+                                                                            }
+                                                                        });
                                                                     }
-                                                                });
+                                                                }
                                                             }
                                                         } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Aucun duel en attente.".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun duel en attente.".to_string(), &reply_target, reply_sender_id));
                                                         }
                                                     } else if args_lower == "decline" || args_lower == "non" || args_lower == "refuse" {
                                                         let mut duel_guard = duel_ref.lock().await;
                                                         if let Some(duel) = duel_guard.as_ref() {
-                                                            if duel.target_uid == sender_uid {
-                                                                let challenger = duel.challenger_name.clone();
-                                                                let target = duel.target_name.clone();
-                                                                *duel_guard = None;
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    format!("🏳️ {} refuse le duel de {}. Lâche !", target, challenger),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Ce duel ne te concerne pas !".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
+                                                            match commands::duel_decline(duel, &sender_uid) {
+                                                                commands::DuelDeclineResult::NotYourDuel => {
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Ce duel ne te concerne pas !".to_string(), &reply_target, reply_sender_id));
+                                                                }
+                                                                commands::DuelDeclineResult::Declined(msg) => {
+                                                                    *duel_guard = None;
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                                }
+                                                                commands::DuelDeclineResult::NoDuel => {
+                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun duel en attente.".to_string(), &reply_target, reply_sender_id));
+                                                                }
                                                             }
                                                         } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Aucun duel en attente.".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("❌ Aucun duel en attente.".to_string(), &reply_target, reply_sender_id));
                                                         }
                                                     } else if args.is_empty() {
                                                         let duel_guard = duel_ref.lock().await;
-                                                        if let Some(duel) = duel_guard.as_ref() {
-                                                            if duel.created.elapsed().as_secs() <= 30 {
-                                                                let remaining = 30 - duel.created.elapsed().as_secs();
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    format!("⚔️ Duel en attente : {} vs {} ({}s restantes)\n{} doit taper [b]!duel accept[/b] ou [b]!duel non[/b]", duel.challenger_name, duel.target_name, remaining, duel.target_name),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else {
+                                                        match commands::duel_status(duel_guard.as_ref()) {
+                                                            commands::DuelStatusResult::Pending(msg) => {
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                            }
+                                                            commands::DuelStatusResult::ExpiredOrNone(msg) => {
                                                                 drop(duel_guard);
                                                                 let mut dg = duel_ref.lock().await;
                                                                 *dg = None;
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Usage: !duel <nom> — défier quelqu'un en duel (2d6, perdant = kick)".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
+                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                             }
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Usage: !duel <nom> — défier quelqu'un en duel (2d6, perdant = kick)".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
                                                         }
                                                     } else {
                                                         // Challenge someone: find target by partial name
                                                         let duel_guard = duel_ref.lock().await;
-                                                        if let Some(duel) = duel_guard.as_ref() {
-                                                            if duel.created.elapsed().as_secs() <= 30 {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    format!("❌ Un duel est déjà en cours : {} vs {} ! Attends qu'il expire.", duel.challenger_name, duel.target_name),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                                continue;
-                                                            }
+                                                        if let Some(msg) = commands::duel_check_active(duel_guard.as_ref()) {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                            continue;
                                                         }
                                                         drop(duel_guard);
 
