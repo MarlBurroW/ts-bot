@@ -767,6 +767,75 @@ pub fn lang_command(arg: &str) -> LangResult {
     }
 }
 
+// --- !greet command ---
+
+/// Result of processing a `!greet` command.
+pub enum GreetResult {
+    /// Set greeting enabled/disabled state.
+    SetEnabled { message: String, enabled: bool },
+    /// Show current greet status.
+    Status(String),
+    /// Invalid argument.
+    Invalid(String),
+}
+
+/// Process the `!greet` command. `arg` is the part after `!greet ` (lowercased).
+/// `current_enabled` is the current greet state.
+pub fn greet_command(arg: &str, current_enabled: bool) -> GreetResult {
+    match arg.trim() {
+        "on" => GreetResult::SetEnabled {
+            message: "👋 Greetings activés — je saluerai les arrivants !".to_string(),
+            enabled: true,
+        },
+        "off" => GreetResult::SetEnabled {
+            message: "🔕 Greetings désactivés.".to_string(),
+            enabled: false,
+        },
+        "" => {
+            let status = if current_enabled { "activés ✅" } else { "désactivés ❌" };
+            GreetResult::Status(format!(
+                "👋 Greetings : {} — !greet on|off pour changer",
+                status
+            ))
+        }
+        _ => GreetResult::Invalid("❌ Usage: !greet on|off".to_string()),
+    }
+}
+
+// --- !timeout command ---
+
+/// Result of processing a `!timeout` command.
+pub enum TimeoutResult {
+    /// Set timeout to a new value (clamped to 500-10000).
+    Set { message: String, value_ms: u64 },
+    /// Show current timeout value.
+    Show(String),
+    /// Invalid argument.
+    Invalid(String),
+}
+
+/// Process the `!timeout` command. `arg` is the part after `!timeout `.
+/// `current_ms` is the current silence timeout.
+pub fn timeout_command(arg: &str, current_ms: u64) -> TimeoutResult {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return TimeoutResult::Show(format!(
+            "⏱️ Silence timeout : {}ms — !timeout <ms> pour changer (500-10000)",
+            current_ms
+        ));
+    }
+    match arg.parse::<u64>() {
+        Ok(ms) => {
+            let clamped = ms.clamp(500, 10000);
+            TimeoutResult::Set {
+                message: format!("⏱️ Silence timeout : {}ms", clamped),
+                value_ms: clamped,
+            }
+        }
+        Err(_) => TimeoutResult::Invalid("❌ Usage: !timeout <ms> (500-10000)".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1315,5 +1384,66 @@ mod tests {
         let r = lang_command("");
         let LangResult::Reset { message } = r else { panic!("expected Reset") };
         assert!(message.contains("auto"));
+    }
+
+    // --- greet ---
+
+    #[test]
+    fn test_greet_on() {
+        let GreetResult::SetEnabled { message, enabled } = greet_command("on", true) else { panic!("expected SetEnabled") };
+        assert!(enabled);
+        assert!(message.contains("activés"));
+    }
+
+    #[test]
+    fn test_greet_off() {
+        let GreetResult::SetEnabled { message, enabled } = greet_command("off", false) else { panic!("expected SetEnabled") };
+        assert!(!enabled);
+        assert!(message.contains("désactivés"));
+    }
+
+    #[test]
+    fn test_greet_status() {
+        let GreetResult::Status(msg) = greet_command("", true) else { panic!("expected Status") };
+        assert!(msg.contains("activés ✅"));
+
+        let GreetResult::Status(msg) = greet_command("", false) else { panic!("expected Status") };
+        assert!(msg.contains("désactivés ❌"));
+    }
+
+    #[test]
+    fn test_greet_invalid() {
+        let GreetResult::Invalid(msg) = greet_command("maybe", false) else { panic!("expected Invalid") };
+        assert!(msg.contains("Usage"));
+    }
+
+    // --- timeout ---
+
+    #[test]
+    fn test_timeout_set_valid() {
+        let TimeoutResult::Set { message, value_ms } = timeout_command("2000", 1500) else { panic!("expected Set") };
+        assert_eq!(value_ms, 2000);
+        assert!(message.contains("2000ms"));
+    }
+
+    #[test]
+    fn test_timeout_set_clamped() {
+        let TimeoutResult::Set { value_ms, .. } = timeout_command("100", 1500) else { panic!("expected Set") };
+        assert_eq!(value_ms, 500);
+
+        let TimeoutResult::Set { value_ms, .. } = timeout_command("99999", 1500) else { panic!("expected Set") };
+        assert_eq!(value_ms, 10000);
+    }
+
+    #[test]
+    fn test_timeout_show() {
+        let TimeoutResult::Show(msg) = timeout_command("", 1500) else { panic!("expected Show") };
+        assert!(msg.contains("1500ms"));
+    }
+
+    #[test]
+    fn test_timeout_invalid() {
+        let TimeoutResult::Invalid(msg) = timeout_command("abc", 1500) else { panic!("expected Invalid") };
+        assert!(msg.contains("Usage"));
     }
 }

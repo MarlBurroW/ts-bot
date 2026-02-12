@@ -1584,63 +1584,33 @@ async fn main() -> Result<()> {
                                                         &reply_target, reply_sender_id,
                                                     ));
                                                 } else if msg_lower.starts_with("!greet") {
-                                                    let parts: Vec<&str> = msg_lower.split_whitespace().collect();
-                                                    if parts.len() >= 2 {
-                                                        match parts[1] {
-                                                            "on" => {
-                                                                greet_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                                                                save_json_compact("data/greet.json", &serde_json::json!({"enabled": true}));
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "👋 Greetings activés — je saluerai les arrivants !".to_string(),
-                                                                    &reply_target, reply_sender_id,
-                                                                ));
-                                                            }
-                                                            "off" => {
-                                                                greet_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-                                                                save_json_compact("data/greet.json", &serde_json::json!({"enabled": false}));
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "🔕 Greetings désactivés.".to_string(),
-                                                                    &reply_target, reply_sender_id,
-                                                                ));
-                                                            }
-                                                            _ => {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Usage: !greet on|off".to_string(),
-                                                                    &reply_target, reply_sender_id,
-                                                                ));
-                                                            }
+                                                    let arg = msg_lower.split_whitespace().nth(1).unwrap_or("");
+                                                    let current = greet_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                                                    match commands::greet_command(arg, current) {
+                                                        commands::GreetResult::SetEnabled { message, enabled } => {
+                                                            greet_enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+                                                            save_json_compact("data/greet.json", &serde_json::json!({"enabled": enabled}));
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(message, &reply_target, reply_sender_id));
                                                         }
-                                                    } else {
-                                                        let status = if greet_enabled.load(std::sync::atomic::Ordering::Relaxed) { "activés ✅" } else { "désactivés ❌" };
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("👋 Greetings : {} — !greet on|off pour changer", status),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
+                                                        commands::GreetResult::Status(msg) | commands::GreetResult::Invalid(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
                                                     }
                                                 } else if msg_lower.starts_with("!timeout") {
-                                                    let parts: Vec<&str> = msg_lower.split_whitespace().collect();
-                                                    if parts.len() >= 2 {
-                                                        if let Ok(ms) = parts[1].parse::<u64>() {
-                                                            let clamped = ms.clamp(500, 10000);
-                                                            let mut bm = buffer_manager.lock().await;
-                                                            bm.set_silence_timeout_ms(clamped);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("⏱️ Silence timeout : {}ms", clamped),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Usage: !timeout <ms> (500-10000)".to_string(),
-                                                                &reply_target, reply_sender_id,
-                                                            ));
-                                                        }
-                                                    } else {
+                                                    let arg = msg_lower.split_whitespace().nth(1).unwrap_or("");
+                                                    let current_ms = {
                                                         let bm = buffer_manager.lock().await;
-                                                        let current = bm.silence_timeout_ms();
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("⏱️ Silence timeout : {}ms — !timeout <ms> pour changer (500-10000)", current),
-                                                            &reply_target, reply_sender_id,
-                                                        ));
+                                                        bm.silence_timeout_ms()
+                                                    };
+                                                    match commands::timeout_command(arg, current_ms) {
+                                                        commands::TimeoutResult::Set { message, value_ms } => {
+                                                            let mut bm = buffer_manager.lock().await;
+                                                            bm.set_silence_timeout_ms(value_ms);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(message, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::TimeoutResult::Show(msg) | commands::TimeoutResult::Invalid(msg) => {
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
                                                     }
                                                 } else if msg_lower.starts_with("!roll") || msg_lower.starts_with("!dice") {
                                                     let args = message.split_whitespace().skip(1).collect::<Vec<&str>>().join(" ");
