@@ -42,7 +42,7 @@ pub struct ActiveDuel {
 }
 
 /// A timed reminder set by a user.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Reminder {
     /// Unix timestamp in ms when the reminder fires.
     pub due_ms: u64,

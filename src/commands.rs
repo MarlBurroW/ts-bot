@@ -5,9 +5,9 @@
 
 use rand::Rng;
 
-use crate::models::{ActivePoll, BotStats};
+use crate::models::{ActivePoll, BotStats, Reminder};
 use crate::persistence::{load_json, save_json};
-use crate::utils::{format_uptime, truncate_str};
+use crate::utils::{format_duration_ms, format_uptime, parse_duration_str, truncate_str};
 
 /// Returns the help text listing all available commands.
 pub fn help_text() -> String {
@@ -575,6 +575,113 @@ pub fn vote(poll: &mut ActivePoll, arg: &str, voter_uid: &str, voter_name: &str)
     }
 }
 
+// ---------------------------------------------------------------------------
+// !remind / !rappel
+// ---------------------------------------------------------------------------
+
+/// Result of a `!remind` command.
+#[derive(Debug)]
+pub enum RemindResult {
+    /// Simple text response (list, error, usage).
+    Response(String),
+    /// A new reminder should be added to the list and persisted.
+    Add { message: String, reminder: Reminder },
+    /// Clear user's reminders — caller should retain only non-matching and persist.
+    Clear { message: String, removed: usize },
+}
+
+/// Pure handler for `!remind` / `!rappel`.
+///
+/// `reminders` is the current list (read-only), `now_ms` is the current epoch ms.
+/// Returns a `RemindResult` that the caller uses to mutate state + send response.
+pub fn remind_command(
+    reminders: &[Reminder],
+    arg: &str,
+    uid: &str,
+    name: &str,
+    now_ms: u64,
+) -> RemindResult {
+    if arg.is_empty() || arg == "list" {
+        let mine: Vec<&Reminder> = reminders.iter().filter(|r| r.uid == uid).collect();
+        if mine.is_empty() {
+            return RemindResult::Response(
+                "⏰ Aucun rappel en cours.\nUsage : [b]!remind <durée> <message>[/b]\nEx: !remind 30m Checker le four".to_string(),
+            );
+        }
+        let mut lines = vec![format!(
+            "⏰ {} rappel{} en cours :",
+            mine.len(),
+            if mine.len() > 1 { "s" } else { "" }
+        )];
+        for (i, r) in mine.iter().enumerate() {
+            let remaining = if r.due_ms > now_ms {
+                format_duration_ms(r.due_ms - now_ms)
+            } else {
+                "imminent".to_string()
+            };
+            lines.push(format!("  [b]{}.[/b] dans {} — {}", i + 1, remaining, r.message));
+        }
+        return RemindResult::Response(lines.join("\n"));
+    }
+
+    if arg == "clear" || arg == "annuler" {
+        let removed = reminders.iter().filter(|r| r.uid == uid).count();
+        let msg = if removed > 0 {
+            format!(
+                "🗑️ {} rappel{} supprimé{}",
+                removed,
+                if removed > 1 { "s" } else { "" },
+                if removed > 1 { "s" } else { "" }
+            )
+        } else {
+            "ℹ️ Aucun rappel à supprimer.".to_string()
+        };
+        return RemindResult::Clear { message: msg, removed };
+    }
+
+    // Parse: <duration> <message>
+    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+    let duration_str = parts[0];
+    let msg_text = parts.get(1).unwrap_or(&"").trim();
+
+    let Some(dur_ms) = parse_duration_str(duration_str) else {
+        return RemindResult::Response(
+            "❌ Durée invalide. Formats : 30s, 5m, 1h, 2h30m, 1d, 1j\nEx: [b]!remind 30m Checker le four[/b]".to_string(),
+        );
+    };
+
+    if msg_text.is_empty() {
+        return RemindResult::Response(
+            "❌ Il faut un message ! Ex: [b]!remind 30m Checker le four[/b]".to_string(),
+        );
+    }
+    if dur_ms < 10_000 {
+        return RemindResult::Response("❌ Durée trop courte (minimum 10s).".to_string());
+    }
+    if dur_ms > 7 * 86400 * 1000 {
+        return RemindResult::Response("❌ Durée trop longue (maximum 7 jours).".to_string());
+    }
+
+    let user_count = reminders.iter().filter(|r| r.uid == uid).count();
+    if user_count >= 10 {
+        return RemindResult::Response(
+            "❌ Maximum 10 rappels actifs. Utilise [b]!remind clear[/b] pour nettoyer.".to_string(),
+        );
+    }
+
+    let reminder = Reminder {
+        due_ms: now_ms + dur_ms,
+        uid: uid.to_string(),
+        name: name.to_string(),
+        message: msg_text.to_string(),
+        created_ms: now_ms,
+    };
+    RemindResult::Add {
+        message: format!("✅ Rappel dans [b]{}[/b] : {}", format_duration_ms(dur_ms), msg_text),
+        reminder,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,6 +986,118 @@ mod tests {
     }
 
     // --- Notify tests ---
+
+    // --- Remind tests ---
+
+    #[test]
+    fn test_remind_empty_shows_usage() {
+        let reminders = vec![];
+        let r = remind_command(&reminders, "", "uid1", "alice", 0);
+        match r {
+            RemindResult::Response(msg) => assert!(msg.contains("Aucun rappel")),
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_remind_list_shows_pending() {
+        let reminders = vec![Reminder {
+            due_ms: 999_999_999_999,
+            uid: "uid1".to_string(),
+            name: "alice".to_string(),
+            message: "Check oven".to_string(),
+            created_ms: 0,
+        }];
+        let r = remind_command(&reminders, "list", "uid1", "alice", 1000);
+        match r {
+            RemindResult::Response(msg) => {
+                assert!(msg.contains("1 rappel"));
+                assert!(msg.contains("Check oven"));
+            }
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_remind_clear() {
+        let reminders = vec![Reminder {
+            due_ms: 999_999_999_999,
+            uid: "uid1".to_string(),
+            name: "alice".to_string(),
+            message: "Test".to_string(),
+            created_ms: 0,
+        }];
+        let r = remind_command(&reminders, "clear", "uid1", "alice", 0);
+        match r {
+            RemindResult::Clear { message, removed } => {
+                assert_eq!(removed, 1);
+                assert!(message.contains("1 rappel"));
+            }
+            _ => panic!("Expected Clear"),
+        }
+    }
+
+    #[test]
+    fn test_remind_create_valid() {
+        let reminders = vec![];
+        let r = remind_command(&reminders, "30m Check the oven", "uid1", "alice", 1000);
+        match r {
+            RemindResult::Add { message, reminder } => {
+                assert!(message.contains("Check the oven"));
+                assert_eq!(reminder.message, "Check the oven");
+                assert_eq!(reminder.uid, "uid1");
+            }
+            _ => panic!("Expected Add, got {:?}", r),
+        }
+    }
+
+    #[test]
+    fn test_remind_too_short() {
+        let reminders = vec![];
+        let r = remind_command(&reminders, "5s hello", "uid1", "alice", 0);
+        match r {
+            RemindResult::Response(msg) => assert!(msg.contains("trop courte")),
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_remind_max_limit() {
+        let reminders: Vec<Reminder> = (0..10)
+            .map(|i| Reminder {
+                due_ms: 999_999_999_999,
+                uid: "uid1".to_string(),
+                name: "alice".to_string(),
+                message: format!("r{}", i),
+                created_ms: 0,
+            })
+            .collect();
+        let r = remind_command(&reminders, "30m another", "uid1", "alice", 1000);
+        match r {
+            RemindResult::Response(msg) => assert!(msg.contains("Maximum 10")),
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_remind_invalid_duration() {
+        let reminders = vec![];
+        let r = remind_command(&reminders, "xyz hello", "uid1", "alice", 0);
+        match r {
+            RemindResult::Response(msg) => assert!(msg.contains("Durée invalide")),
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_remind_no_message() {
+        let reminders = vec![];
+        let r = remind_command(&reminders, "30m", "uid1", "alice", 0);
+        match r {
+            RemindResult::Response(msg) => assert!(msg.contains("Il faut un message")),
+            _ => panic!("Expected Response"),
+        }
+    }
 
     #[test]
     fn test_notify_empty_shows_help() {

@@ -2,7 +2,7 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
-use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model};
+use ts3_bot::utils::{truncate_str, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
@@ -2038,87 +2038,27 @@ async fn main() -> Result<()> {
                                                     }
                                                 } else if msg_lower.starts_with("!remind") || msg_lower.starts_with("!rappel") {
                                                     let arg = message.split_once(' ').map(|x| x.1).unwrap_or("").trim();
-                                                    if arg.is_empty() || arg == "list" {
-                                                        // Show pending reminders for this user
-                                                        let reminders_lock = reminders.lock().await;
-                                                        let mine: Vec<&Reminder> = reminders_lock.iter().filter(|r| r.uid == sender_uid).collect();
-                                                        if mine.is_empty() {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "⏰ Aucun rappel en cours.\nUsage : [b]!remind <durée> <message>[/b]\nEx: !remind 30m Checker le four".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                        } else {
-                                                            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                                                            let mut lines = vec![format!("⏰ {} rappel{} en cours :", mine.len(), if mine.len() > 1 { "s" } else { "" })];
-                                                            for (i, r) in mine.iter().enumerate() {
-                                                                let remaining = if r.due_ms > now_ms { format_duration_ms(r.due_ms - now_ms) } else { "imminent".to_string() };
-                                                                lines.push(format!("  [b]{}.[/b] dans {} — {}", i + 1, remaining, r.message));
-                                                            }
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(lines.join("\n"), &reply_target, reply_sender_id));
+                                                    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                                                    let reminders_lock = reminders.lock().await;
+                                                    let result = commands::remind_command(&reminders_lock, arg, &sender_uid, &sender_name, now_ms);
+                                                    match result {
+                                                        commands::RemindResult::Response(msg) => {
+                                                            drop(reminders_lock);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
-                                                    } else if arg == "clear" || arg == "annuler" {
-                                                        let mut reminders_lock = reminders.lock().await;
-                                                        let before = reminders_lock.len();
-                                                        reminders_lock.retain(|r| r.uid != sender_uid);
-                                                        let removed = before - reminders_lock.len();
-                                                        save_json_compact("data/reminders.json", &*reminders_lock);
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            if removed > 0 { format!("🗑️ {} rappel{} supprimé{}", removed, if removed > 1 { "s" } else { "" }, if removed > 1 { "s" } else { "" }) }
-                                                            else { "ℹ️ Aucun rappel à supprimer.".to_string() },
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                    } else {
-                                                        // Parse: !remind <duration> <message>
-                                                        let parts: Vec<&str> = arg.splitn(2, ' ').collect();
-                                                        let duration_str = parts[0];
-                                                        let msg_text = parts.get(1).unwrap_or(&"").trim();
-                                                        if let Some(dur_ms) = parse_duration_str(duration_str) {
-                                                            if msg_text.is_empty() {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Il faut un message ! Ex: [b]!remind 30m Checker le four[/b]".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else if dur_ms < 10_000 {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Durée trop courte (minimum 10s).".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else if dur_ms > 7 * 86400 * 1000 {
-                                                                let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                    "❌ Durée trop longue (maximum 7 jours).".to_string(),
-                                                                    &reply_target, reply_sender_id
-                                                                ));
-                                                            } else {
-                                                                let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                                                                let reminder = Reminder {
-                                                                    due_ms: now_ms + dur_ms,
-                                                                    uid: sender_uid.clone(),
-                                                                    name: sender_name.clone(),
-                                                                    message: msg_text.to_string(),
-                                                                    created_ms: now_ms,
-                                                                };
-                                                                let mut reminders_lock = reminders.lock().await;
-                                                                // Max 10 reminders per user
-                                                                let user_count = reminders_lock.iter().filter(|r| r.uid == sender_uid).count();
-                                                                if user_count >= 10 {
-                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                        "❌ Maximum 10 rappels actifs. Utilise [b]!remind clear[/b] pour nettoyer.".to_string(),
-                                                                        &reply_target, reply_sender_id
-                                                                    ));
-                                                                } else {
-                                                                    reminders_lock.push(reminder);
-                                                                    save_json_compact("data/reminders.json", &*reminders_lock);
-                                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                        format!("✅ Rappel dans [b]{}[/b] : {}", format_duration_ms(dur_ms), msg_text),
-                                                                        &reply_target, reply_sender_id
-                                                                    ));
-                                                                }
-                                                            }
-                                                        } else {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "❌ Durée invalide. Formats : 30s, 5m, 1h, 2h30m, 1d, 1j\nEx: [b]!remind 30m Checker le four[/b]".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
+                                                        commands::RemindResult::Clear { message: msg, .. } => {
+                                                            drop(reminders_lock);
+                                                            let mut reminders_lock = reminders.lock().await;
+                                                            reminders_lock.retain(|r| r.uid != sender_uid);
+                                                            save_json_compact("data/reminders.json", &*reminders_lock);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
+                                                        }
+                                                        commands::RemindResult::Add { message: msg, reminder } => {
+                                                            drop(reminders_lock);
+                                                            let mut reminders_lock = reminders.lock().await;
+                                                            reminders_lock.push(reminder);
+                                                            save_json_compact("data/reminders.json", &*reminders_lock);
+                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!lang") {
