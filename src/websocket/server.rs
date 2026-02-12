@@ -82,6 +82,43 @@ pub struct WebSocketServerParams {
     pub chat_history: Option<SharedChatHistory>,
 }
 
+/// Helper: lock TS3 handle, build an OutCommand via closure, send it, and broadcast success/error.
+/// Returns true if the command was sent successfully.
+async fn send_ts3_cmd(
+    ts3_handle: &SharedTs3Handle,
+    event_tx: &Arc<broadcast::Sender<WebSocketEvent>>,
+    command_id: Option<String>,
+    build_cmd: impl FnOnce(&mut OutCommand),
+    ts3_command: &str,
+    success_msg: String,
+    error_prefix: &str,
+) {
+    let mut handle_guard = ts3_handle.lock().await;
+    if let Some(ref mut sender) = *handle_guard {
+        let mut cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            ts3_command,
+        );
+        build_cmd(&mut cmd);
+        match sender.send_command(cmd).await {
+            Ok(()) => {
+                info!("{}", success_msg);
+                let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(success_msg)));
+            }
+            Err(e) => {
+                let _ = event_tx.send(WebSocketEvent::command_error(
+                    command_id,
+                    format!("{}: {:?}", error_prefix, e),
+                ));
+            }
+        }
+    } else {
+        let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
+    }
+}
+
 /// Run the WebSocket server
 pub async fn run_server(
     config: BotConfig,
@@ -539,88 +576,43 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                         CommandAction::PokeClient { command_id, client_id, message } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "clientpoke",
-                                );
-                                cmd.write_arg("clid", &(client_id as u16));
-                                cmd.write_arg("msg", &message);
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Poked client {} with message: {}", client_id, &message[..message.len().min(60)]);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Poked client {}", client_id))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Poke failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                            let msg_preview = message[..message.len().min(60)].to_string();
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| { cmd.write_arg("clid", &(client_id as u16)); cmd.write_arg("msg", &message); },
+                                "clientpoke",
+                                format!("Poked client {} with message: {}", client_id, msg_preview),
+                                "Poke failed",
+                            ).await;
                         }
                         CommandAction::KickClient { command_id, client_id, reason, reason_id } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "clientkick",
-                                );
-                                cmd.write_arg("clid", &(client_id as u16));
-                                cmd.write_arg("reasonid", &reason_id);
-                                if !reason.is_empty() {
-                                    cmd.write_arg("reasonmsg", &reason);
-                                }
-
-                                let kick_type_str = if reason_id == 4 { "channel" } else { "server" };
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Kicked client {} from {} (reason: {})", client_id, kick_type_str, &reason[..reason.len().min(60)]);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Kicked client {} from {}", client_id, kick_type_str))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Kick failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                            let kick_type_str = if reason_id == 4 { "channel" } else { "server" };
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| {
+                                    cmd.write_arg("clid", &(client_id as u16));
+                                    cmd.write_arg("reasonid", &reason_id);
+                                    if !reason.is_empty() { cmd.write_arg("reasonmsg", &reason); }
+                                },
+                                "clientkick",
+                                format!("Kicked client {} from {}", client_id, kick_type_str),
+                                "Kick failed",
+                            ).await;
                         }
                         CommandAction::MoveClient { command_id, client_id, channel_id, password } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "clientmove",
-                                );
-                                cmd.write_arg("clid", &(client_id as u16));
-                                cmd.write_arg("cid", &channel_id);
-                                if let Some(ref p) = password {
-                                    if !p.is_empty() {
-                                        cmd.write_arg("cpw", p);
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| {
+                                    cmd.write_arg("clid", &(client_id as u16));
+                                    cmd.write_arg("cid", &channel_id);
+                                    if let Some(ref p) = password {
+                                        if !p.is_empty() { cmd.write_arg("cpw", p); }
                                     }
-                                }
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Moved client {} to channel {}", client_id, channel_id);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Moved client {} to channel {}", client_id, channel_id))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Move client failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                                },
+                                "clientmove",
+                                format!("Moved client {} to channel {}", client_id, channel_id),
+                                "Move client failed",
+                            ).await;
                         }
                         CommandAction::GetServerInfo { command_id } => {
                             let mut handle_guard = ts3_handle.lock().await;
@@ -659,69 +651,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                         CommandAction::SetNickname { command_id, nickname } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "clientupdate",
-                                );
-                                cmd.write_arg("client_nickname", &nickname);
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Nickname changed to '{}'", nickname);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Nickname changed to '{}'", nickname))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Set nickname failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| { cmd.write_arg("client_nickname", &nickname); },
+                                "clientupdate",
+                                format!("Nickname changed to '{}'", nickname),
+                                "Set nickname failed",
+                            ).await;
                         }
                         CommandAction::CreateChannel { command_id, name, parent_id, temporary, topic, description, password } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "channelcreate",
-                                );
-                                cmd.write_arg("channel_name", &name);
-                                if let Some(pid) = parent_id {
-                                    cmd.write_arg("cpid", &pid);
-                                }
-                                if temporary.unwrap_or(false) {
-                                    cmd.write_arg("channel_flag_temporary", &1u8);
-                                }
-                                if let Some(ref t) = topic {
-                                    cmd.write_arg("channel_topic", t);
-                                }
-                                if let Some(ref d) = description {
-                                    cmd.write_arg("channel_description", d);
-                                }
-                                if let Some(ref p) = password {
-                                    if !p.is_empty() {
-                                        cmd.write_arg("channel_password", p);
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| {
+                                    cmd.write_arg("channel_name", &name);
+                                    if let Some(pid) = parent_id { cmd.write_arg("cpid", &pid); }
+                                    if temporary.unwrap_or(false) { cmd.write_arg("channel_flag_temporary", &1u8); }
+                                    if let Some(ref t) = topic { cmd.write_arg("channel_topic", t); }
+                                    if let Some(ref d) = description { cmd.write_arg("channel_description", d); }
+                                    if let Some(ref p) = password {
+                                        if !p.is_empty() { cmd.write_arg("channel_password", p); }
                                     }
-                                }
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Channel '{}' created", name);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Channel '{}' created", name))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Create channel failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                                },
+                                "channelcreate",
+                                format!("Channel '{}' created", name),
+                                "Create channel failed",
+                            ).await;
                         }
                         CommandAction::ActivateListener { command_id, client_id } => {
                             if let Some(ref bm) = state.buffer_manager {
@@ -826,54 +780,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                         CommandAction::SetChannelDescription { command_id, channel_id, description } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "channeledit",
-                                );
-                                cmd.write_arg("cid", &channel_id);
-                                cmd.write_arg("channel_description", &description);
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Channel {} description updated", channel_id);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Channel {} description updated", channel_id))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Set description failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| { cmd.write_arg("cid", &channel_id); cmd.write_arg("channel_description", &description); },
+                                "channeledit",
+                                format!("Channel {} description updated", channel_id),
+                                "Set description failed",
+                            ).await;
                         }
                         CommandAction::DeleteChannel { command_id, channel_id, force } => {
-                            let mut handle_guard = ts3_handle.lock().await;
-                            if let Some(ref mut sender) = *handle_guard {
-                                let mut cmd = OutCommand::new(
-                                    Direction::C2S,
-                                    Flags::empty(),
-                                    PacketType::Command,
-                                    "channeldelete",
-                                );
-                                cmd.write_arg("cid", &channel_id);
-                                cmd.write_arg("force", &(if force { 1u32 } else { 0u32 }));
-
-                                match sender.send_command(cmd).await {
-                                    Ok(()) => {
-                                        info!("Channel {} deleted (force={})", channel_id, force);
-                                        let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Channel {} deleted", channel_id))));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Delete channel failed: {:?}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
-                            }
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| {
+                                    cmd.write_arg("cid", &channel_id);
+                                    cmd.write_arg("force", &(if force { 1u32 } else { 0u32 }));
+                                },
+                                "channeldelete",
+                                format!("Channel {} deleted (force={})", channel_id, force),
+                                "Delete channel failed",
+                            ).await;
                         }
                     }
                 }
