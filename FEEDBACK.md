@@ -59,3 +59,21 @@ Priority: low
 Note: Implemented in commit 20830ca. Added `valid_voices_for_model()` utility — tts-1/tts-1-hd accept only 6 classic voices (alloy, echo, fable, nova, onyx, shimmer), gpt-4o-mini-tts accepts all 11. Validation applied in 3 places: `!voice` command, `!tts voice:X` prefix, and WS `set_voice` handler. Invalid voices now get a clear error with the list of valid options for the configured model. 3 unit tests added.
 
 Les voix ash, ballad, coral, sage, verse ne sont supportées que par `gpt-4o-mini-tts`, pas par `tts-1`. Le bot les accepte dans `!voice` mais l'API plante ensuite. Soit filtrer les voix invalides selon le modèle configuré, soit passer au modèle `gpt-4o-mini-tts`.
+
+## Item — Voxtral Study
+- **Date:** 2026-02-12
+- **Priority:** high
+- **Status:** done
+- **Description:** Étude de faisabilité : remplacer l'API OpenAI Whisper par Voxtral Transcribe 2 (Mistral)
+- **Details:**
+  - Voxtral Transcribe 2 : modèle open source (Apache 2.0), 4B params, bat Whisper sur les benchmarks
+  - Actuellement le bot utilise l'API OpenAI Whisper pour le STT (~1.2s latence)
+  - Questions à étudier :
+    1. Peut-on faire tourner Voxtral en local sur la machine host (specs CPU/RAM/GPU dispo) ?
+    2. Si pas assez de ressources locales, est-ce que Mistral a une API hébergée pour Voxtral ?
+    3. Comparaison latence/qualité/coût vs OpenAI Whisper API actuel
+    4. Format d'entrée audio supporté (opus/pcm/wav ?) — compatibilité avec le pipeline actuel
+    5. Qualité de transcription FR vs EN comparée à Whisper
+  - Ne PAS implémenter le changement — juste produire un rapport avec recommandation
+  - Écrire le rapport dans `~/ts-bot/VOXTRAL_STUDY.md`
+- **Note:** Report written in `~/ts-bot/VOXTRAL_STUDY.md`. TL;DR: self-hosting impossible (no GPU), hosted API is 50% cheaper for batch but same price for realtime. Recommendation: keep Whisper for now — cost savings are negligible for our volume, Voxtral API is brand new. Revisit Q2 2026.
