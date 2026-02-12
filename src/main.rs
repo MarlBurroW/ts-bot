@@ -1421,39 +1421,17 @@ async fn main() -> Result<()> {
                                                     tokio::spawn(async move {
                                                         let result = sender_for_ch.with_connection(move |con| {
                                                             if let Ok(state) = con.get_state() {
-                                                                // Count clients per channel
                                                                 let mut client_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
                                                                 for c in state.clients.values() {
                                                                     *client_counts.entry(c.channel.0).or_insert(0) += 1;
                                                                 }
-
-                                                                // Build channel tree (root channels sorted by order, then sub-channels)
-                                                                let mut lines: Vec<String> = Vec::new();
-
-                                                                // Collect and sort channels by parent, then order
-                                                                let mut channels: Vec<_> = state.channels.iter().collect();
-                                                                channels.sort_by_key(|(_, ch)| (ch.parent.0, ch.order.0));
-
-                                                                // Simple flat list with indentation for sub-channels
-                                                                for (id, ch) in &channels {
-                                                                    let count = client_counts.get(&{ id.0 }).copied().unwrap_or(0);
-                                                                    let indent = if ch.parent.0 == 0 { "" } else { "  " };
-                                                                    let users = if count > 0 {
-                                                                        format!(" [b]({})[/b]", count)
-                                                                    } else {
-                                                                        String::new()
-                                                                    };
-                                                                    lines.push(format!("{}• {}{}", indent, ch.name, users));
-                                                                }
-
-                                                                let total_channels = channels.len();
-                                                                let total_clients: usize = client_counts.values().sum();
-                                                                Some(format!(
-                                                                    "📡 [b]Channels[/b] — {} channels, {} utilisateurs\n{}",
-                                                                    total_channels,
-                                                                    total_clients,
-                                                                    lines.join("\n")
-                                                                ))
+                                                                let channels_data: Vec<(String, u64, u64, usize)> = state.channels.iter()
+                                                                    .map(|(id, ch)| {
+                                                                        let count = client_counts.get(&id.0).copied().unwrap_or(0);
+                                                                        (ch.name.clone(), ch.parent.0, ch.order.0, count)
+                                                                    })
+                                                                    .collect();
+                                                                Some(commands::channels_format(&channels_data))
                                                             } else {
                                                                 Some("❌ État TS3 indisponible.".to_string())
                                                             }

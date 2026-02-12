@@ -1187,6 +1187,32 @@ pub fn find_format(query: &str, matches: &[(String, String, Option<u64>)]) -> St
     )
 }
 
+/// Format `!channels` output: channel tree with user counts.
+/// Each entry is (name, parent_id, order, user_count).
+/// Channels are sorted by (parent_id, order) and sub-channels are indented.
+pub fn channels_format(channels: &[(String, u64, u64, usize)]) -> String {
+    let mut sorted: Vec<_> = channels.to_vec();
+    sorted.sort_by_key(|(_, parent, order, _)| (*parent, *order));
+
+    let mut lines: Vec<String> = Vec::new();
+    for (name, parent_id, _, count) in &sorted {
+        let indent = if *parent_id == 0 { "" } else { "  " };
+        let users = if *count > 0 {
+            format!(" [b]({})[/b]", count)
+        } else {
+            String::new()
+        };
+        lines.push(format!("{}• {}{}", indent, name, users));
+    }
+
+    let total_channels = sorted.len();
+    let total_clients: usize = sorted.iter().map(|(_, _, _, c)| c).sum();
+    format!(
+        "📡 [b]Channels[/b] — {} channels, {} utilisateurs\n{}",
+        total_channels, total_clients, lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2094,5 +2120,29 @@ mod tests {
         assert!(result.contains("Lobby"));
         assert!(result.contains("Alicia"));
         assert!(result.contains("AFK"));
+    }
+
+    #[test]
+    fn test_channels_format_empty() {
+        let result = channels_format(&[]);
+        assert!(result.contains("0 channels"));
+        assert!(result.contains("0 utilisateurs"));
+    }
+
+    #[test]
+    fn test_channels_format_tree() {
+        let channels = vec![
+            ("Lobby".to_string(), 0u64, 0u64, 3usize),
+            ("AFK".to_string(), 0, 1, 0),
+            ("Sub Channel".to_string(), 1, 0, 1),
+        ];
+        let result = channels_format(&channels);
+        assert!(result.contains("3 channels"));
+        assert!(result.contains("4 utilisateurs"));
+        assert!(result.contains("• Lobby [b](3)[/b]"));
+        assert!(result.contains("  • Sub Channel [b](1)[/b]"));
+        assert!(result.contains("• AFK"));
+        // AFK should NOT have a count suffix since it's 0
+        assert!(!result.contains("AFK [b]"));
     }
 }
