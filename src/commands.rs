@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::models::{ActivePoll, BotStats, Reminder};
 use crate::persistence::{load_json, save_json};
-use crate::utils::{format_duration_ms, format_uptime, parse_duration_str, truncate_str};
+use crate::utils::{format_connection_duration, format_duration_ms, format_uptime, parse_duration_str, truncate_str};
 
 /// Returns the help text listing all available commands.
 pub fn help_text() -> String {
@@ -1145,6 +1145,48 @@ pub fn tts_validate(parsed: &TtsParseResult) -> TtsValidation {
     }
 }
 
+/// Client info for `!who` formatting: (name, flags_str, connection_secs)
+/// `flags_str` is pre-formatted like " (🔇mic, 💤away)" or empty.
+/// `connection_secs` is None if unknown.
+pub fn who_format(channel_name: &str, clients: &[(String, String, Option<u64>)]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for (name, flag_str, conn_secs) in clients {
+        let duration_str = conn_secs
+            .map(|s| format!(" {}", format_connection_duration(s)))
+            .unwrap_or_default();
+        lines.push(format!("• {}{}{}", name, duration_str, flag_str));
+    }
+    let count = lines.len();
+    format!(
+        "👥 [b]{}[/b] — {} personne{}\n{}",
+        channel_name,
+        count,
+        if count > 1 { "s" } else { "" },
+        lines.join("\n")
+    )
+}
+
+/// Format `!find` results: (name, channel_name, connection_secs).
+pub fn find_format(query: &str, matches: &[(String, String, Option<u64>)]) -> String {
+    if matches.is_empty() {
+        return format!("❌ Aucun utilisateur trouvé pour \"{}\"", query);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for (name, ch_name, conn_secs) in matches {
+        let duration_str = conn_secs
+            .map(|s| format!(" {}", format_connection_duration(s)))
+            .unwrap_or_default();
+        lines.push(format!("• [b]{}[/b] → {}{}", name, ch_name, duration_str));
+    }
+    format!(
+        "🔍 {} résultat{} pour \"{}\" :\n{}",
+        matches.len(),
+        if matches.len() > 1 { "s" } else { "" },
+        query,
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2007,5 +2049,50 @@ mod tests {
     fn test_tts_validate_too_long() {
         let r = TtsParseResult { voice: None, speed: None, text: "a".repeat(501) };
         assert!(matches!(tts_validate(&r), TtsValidation::TooLong(_)));
+    }
+
+    #[test]
+    fn test_who_format_single() {
+        let clients = vec![("Alice".to_string(), "".to_string(), Some(120u64))];
+        let result = who_format("Lobby", &clients);
+        assert!(result.contains("Lobby"));
+        assert!(result.contains("1 personne"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("⏱2m"));
+    }
+
+    #[test]
+    fn test_who_format_multiple() {
+        let clients = vec![
+            ("Alice".to_string(), " (🔇mic)".to_string(), Some(3600)),
+            ("Bob".to_string(), "".to_string(), None),
+        ];
+        let result = who_format("Gaming", &clients);
+        assert!(result.contains("2 personnes"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("🔇mic"));
+        assert!(result.contains("Bob"));
+        assert!(result.contains("⏱1h"));
+    }
+
+    #[test]
+    fn test_find_format_empty() {
+        let result = find_format("nobody", &[]);
+        assert!(result.contains("Aucun utilisateur"));
+        assert!(result.contains("nobody"));
+    }
+
+    #[test]
+    fn test_find_format_results() {
+        let matches = vec![
+            ("Alice".to_string(), "Lobby".to_string(), Some(60u64)),
+            ("Alicia".to_string(), "AFK".to_string(), None),
+        ];
+        let result = find_format("ali", &matches);
+        assert!(result.contains("2 résultats"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("Lobby"));
+        assert!(result.contains("Alicia"));
+        assert!(result.contains("AFK"));
     }
 }

@@ -2,7 +2,7 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
-use ts3_bot::utils::{truncate_str, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model, spawn_delayed_channel_kick};
+use ts3_bot::utils::{truncate_str, format_uptime, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model, spawn_delayed_channel_kick};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
@@ -1218,25 +1218,15 @@ async fn main() -> Result<()> {
                                                             Ok(Some((ch_name, clients_data))) => {
                                                                 let ct = connect_times_who.lock().await;
                                                                 let now = std::time::Instant::now();
-                                                                let mut lines: Vec<String> = Vec::new();
-                                                                for (name, flag_str, uid) in &clients_data {
-                                                                    let duration_str = uid.as_ref()
-                                                                        .and_then(|u| ct.get(u))
-                                                                        .map(|since| {
-                                                                            let secs = now.duration_since(*since).as_secs();
-                                                                            format!(" {}", format_connection_duration(secs))
-                                                                        })
-                                                                        .unwrap_or_default();
-                                                                    lines.push(format!("• {}{}{}", name, duration_str, flag_str));
-                                                                }
-                                                                let count = lines.len();
-                                                                format!(
-                                                                    "👥 [b]{}[/b] — {} personne{}\n{}",
-                                                                    ch_name,
-                                                                    count,
-                                                                    if count > 1 { "s" } else { "" },
-                                                                    lines.join("\n")
-                                                                )
+                                                                let resolved: Vec<(String, String, Option<u64>)> = clients_data.iter()
+                                                                    .map(|(name, flag_str, uid)| {
+                                                                        let secs = uid.as_ref()
+                                                                            .and_then(|u| ct.get(u))
+                                                                            .map(|since| now.duration_since(*since).as_secs());
+                                                                        (name.clone(), flag_str.clone(), secs)
+                                                                    })
+                                                                    .collect();
+                                                                commands::who_format(&ch_name, &resolved)
                                                             }
                                                             Ok(None) => "❌ Impossible de trouver ton channel.".to_string(),
                                                             Err(e) => format!("❌ Erreur: {}", e),
@@ -1275,24 +1265,18 @@ async fn main() -> Result<()> {
                                                             }).await;
 
                                                             let msg = match result {
-                                                                Ok(Some(matches)) if matches.is_empty() => {
-                                                                    format!("❌ Aucun utilisateur trouvé pour \"{}\"", query)
-                                                                }
                                                                 Ok(Some(matches)) => {
                                                                     let ct = connect_times_find.lock().await;
                                                                     let now = std::time::Instant::now();
-                                                                    let mut lines: Vec<String> = Vec::new();
-                                                                    for (name, ch_name, uid) in &matches {
-                                                                        let duration_str = uid.as_ref()
-                                                                            .and_then(|u| ct.get(u))
-                                                                            .map(|since| {
-                                                                                let secs = now.duration_since(*since).as_secs();
-                                                                                format!(" {}", format_connection_duration(secs))
-                                                                            })
-                                                                            .unwrap_or_default();
-                                                                        lines.push(format!("• [b]{}[/b] → {} {}", name, ch_name, duration_str));
-                                                                    }
-                                                                    format!("🔍 {} résultat{} pour \"{}\" :\n{}", matches.len(), if matches.len() > 1 { "s" } else { "" }, query, lines.join("\n"))
+                                                                    let resolved: Vec<(String, String, Option<u64>)> = matches.iter()
+                                                                        .map(|(name, ch_name, uid)| {
+                                                                            let secs = uid.as_ref()
+                                                                                .and_then(|u| ct.get(u))
+                                                                                .map(|since| now.duration_since(*since).as_secs());
+                                                                            (name.clone(), ch_name.clone(), secs)
+                                                                        })
+                                                                        .collect();
+                                                                    commands::find_format(&query, &resolved)
                                                                 }
                                                                 Ok(None) => "❌ État du serveur indisponible".to_string(),
                                                                 Err(e) => format!("❌ Erreur: {}", e),
