@@ -43,6 +43,21 @@ pub fn format_uptime(secs: u64, detailed: bool) -> String {
 
 /// Parse a duration string like "30m", "2h", "1h30m", "90s", "1d", "1j" into milliseconds.
 /// Bare number without unit is treated as minutes.
+/// Format a connection duration (seconds) into a compact string with ⏱ prefix.
+///
+/// Examples: `⏱45s`, `⏱12m`, `⏱2h34m`, `⏱1j5h`
+pub fn format_connection_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("⏱{}s", secs)
+    } else if secs < 3600 {
+        format!("⏱{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("⏱{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("⏱{}j{}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
 pub fn parse_duration_str(s: &str) -> Option<u64> {
     let s = s.trim().to_lowercase();
     if s.is_empty() {

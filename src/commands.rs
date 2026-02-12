@@ -287,6 +287,43 @@ pub fn quote_command(args: &str, sender_name: &str, quotes_path: &str) -> QuoteA
     QuoteAction::Response(response)
 }
 
+/// Handle the `!seen` command — search for last disconnect time of a user.
+///
+/// `seen_data` maps UID → (name, timestamp_string).
+/// If `query` is empty, returns a count summary. Otherwise searches by partial name match.
+pub fn seen_response(
+    seen_data: &std::collections::HashMap<String, (String, String)>,
+    query: &str,
+) -> String {
+    if query.is_empty() {
+        return format!(
+            "👁️ {} utilisateur(s) trackés — !seen <nom> pour chercher",
+            seen_data.len()
+        );
+    }
+    let query_lower = query.to_lowercase();
+    let matches: Vec<_> = seen_data
+        .values()
+        .filter(|(name, _)| name.to_lowercase().contains(&query_lower))
+        .collect();
+    if matches.is_empty() {
+        format!("❌ Aucun résultat pour \"{}\"", query)
+    } else if matches.len() == 1 {
+        let (name, ts) = &matches[0];
+        format!("👁️ {} — dernière déconnexion : {}", name, ts)
+    } else {
+        let mut lines = vec![format!(
+            "👁️ {} résultats pour \"{}\" :",
+            matches.len(),
+            query
+        )];
+        for (name, ts) in matches.iter().take(5) {
+            lines.push(format!("• {} — {}", name, ts));
+        }
+        lines.join("\n")
+    }
+}
+
 /// Handle the `!history` command — return formatted recent chat history.
 ///
 /// Returns `None` if history is empty, `Some(formatted)` otherwise.
@@ -451,6 +488,39 @@ mod tests {
         assert!(resp.contains("alice"));
         assert!(resp.contains("bob"));
         assert!(resp.contains("2 message"));
+    }
+
+    #[test]
+    fn test_seen_no_query_shows_count() {
+        let seen = std::collections::HashMap::new();
+        let r = seen_response(&seen, "");
+        assert!(r.contains("0 utilisateur"));
+    }
+
+    #[test]
+    fn test_seen_single_match() {
+        let mut seen = std::collections::HashMap::new();
+        seen.insert("uid1".to_string(), ("marlburrow".to_string(), "2026-02-11 22:00".to_string()));
+        let r = seen_response(&seen, "marl");
+        assert!(r.contains("marlburrow"));
+        assert!(r.contains("2026-02-11 22:00"));
+    }
+
+    #[test]
+    fn test_seen_no_match() {
+        let mut seen = std::collections::HashMap::new();
+        seen.insert("uid1".to_string(), ("marlburrow".to_string(), "2026-02-11 22:00".to_string()));
+        let r = seen_response(&seen, "unknown");
+        assert!(r.contains("Aucun résultat"));
+    }
+
+    #[test]
+    fn test_seen_multiple_matches() {
+        let mut seen = std::collections::HashMap::new();
+        seen.insert("uid1".to_string(), ("marlburrow".to_string(), "2026-02-11 22:00".to_string()));
+        seen.insert("uid2".to_string(), ("marlbot".to_string(), "2026-02-11 21:00".to_string()));
+        let r = seen_response(&seen, "marl");
+        assert!(r.contains("2 résultats"));
     }
 
     #[test]

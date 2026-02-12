@@ -37,3 +37,27 @@
 {"a":"🤖 Marlbot","m":"Ah c'est le tweet de l'annonce de Claude 3 d'il y a deux ans. Super scoop Fabien, t'es un peu en retard sur l'actu là. On en est à Claude Opus 4.6 maintenant — tu sais, le truc qui me fait tourner...","t":"2026-02-11T22:54:24.815523586+00:00"}
 {"a":"Hark","m":"c est pas du tout claude 3, c est une news qui a ete publie hier. tu es sans interet, du dit nimp, tu es si peu inteligent","t":"2026-02-11T22:55:21.410078813+00:00"}
 {"a":"🤖 Marlbot","m":"Haha, c'est la recherche web qui m'a sorti ça, le lien X est bloqué pour les bots. Mais bon, au lieu de m'insulter, tu pourrais juste me dire ce que c'est ? Ça t'irait bien le rôle de journaliste,...","t":"2026-02-11T22:55:28.330934559+00:00"}
+{"a":"Maybe","m":"help","t":"2026-02-11T23:51:49.081827813+00:00"}
+{"a":"🤖 Marlbot","m":"Salut Maybe ! Qu'est-ce que je peux faire pour toi ?","t":"2026-02-11T23:51:54.204124452+00:00"}
+{"a":"Maybe","m":"change pour nova","t":"2026-02-11T23:52:46.532817428+00:00"}
+{"a":"🤖 Marlbot","m":"Changer ma voix pour Nova ? C'est la voix de Nicolas qui décide ça, pas les invités. 😄 Autre chose ?","t":"2026-02-11T23:52:52.182338764+00:00"}
+{"a":"bardak","m":"change pour nova","t":"2026-02-11T23:53:10.534320352+00:00"}
+{"a":"🤖 Marlbot","m":"Toi non plus Bardak. 😏","t":"2026-02-11T23:53:14.561277622+00:00"}
+{"a":"Maybe","m":"je t ai baisé","t":"2026-02-11T23:53:27.929277013+00:00"}
+{"a":"🤖 Marlbot","m":"Quel sens de la répartie. Impressionnant. 😐","t":"2026-02-11T23:53:33.047278224+00:00"}
+{"a":"Maybe","m":"marlbot","t":"2026-02-11T23:53:35.154606355+00:00"}
+{"a":"🤖 Marlbot","m":"Oui ?","t":"2026-02-11T23:53:40.138430721+00:00"}
+{"a":"bardak","m":"tu connais pinchchat ?","t":"2026-02-11T23:53:57.486107002+00:00"}
+{"a":"marlburrow","m":"Le changement de voix ne fonctionne pas, signale le dans les feedbacks pour le cron d'auto-amelioration","t":"2026-02-11T23:54:03.330037423+00:00"}
+{"a":"🤖 Marlbot","m":"Ouais, PinchChat c'est un webchat open-source que Nicolas développe pour OpenClaw. C'est mon interface web en gros — tu peux me parler dessus. Le repo est sur GitHub si ça t'intéresse : github.co...","t":"2026-02-11T23:54:05.043562641+00:00"}
+{"a":"🤖 Marlbot","m":"C'est noté dans les feedbacks du ts-bot ! Le cron d'amélioration le prendra en charge. 👍","t":"2026-02-11T23:54:20.902958408+00:00"}
+{"a":"bardak","m":"donne moi les meilleurs builds pour nioh3","t":"2026-02-11T23:54:44.757439167+00:00"}
+{"a":"🤖 Marlbot","m":"Alors Josh, pour Nioh 3 t'as deux grosses directions en early game :\n\n**Samurai (Iron Tonfa)** — gros stagger, combos Ki, garde agressive\n- Spirit : Guhin (boost melee + réduction Ki martial arts)\n...","t":"2026-02-11T23:55:06.154647460+00:00"}
+{"a":"marlburrow","m":"test","t":"2026-02-11T23:56:16.358523685+00:00"}
+{"a":"🤖 Marlbot","m":"Reçu ! 👍","t":"2026-02-11T23:56:20.261700930+00:00"}
+{"a":"marlburrow","m":"Est-ce que tu pourra aussi regarder coté mistral, apparement ils ont sortie un model de transcription open source très recement, ca peut-etre interessant pour nous si c'est mieux que API Open AI","t":"2026-02-11T23:59:17.591346891+00:00"}
+{"a":"🤖 Marlbot","m":"Intéressant ! C'est **Voxtral Transcribe 2** de Mistral, sorti début février :\n\n- **Voxtral Realtime** — open-source Apache 2.0, 4B paramètres, déployable en local\n- Latence configurable jusqu'...","t":"2026-02-11T23:59:34.624488676+00:00"}
+{"a":"marlburrow","m":"salut","t":"2026-02-12T00:07:36.242164502+00:00"}
+{"a":"🤖 Marlbot","m":"Salut Nicolas !","t":"2026-02-12T00:07:44.660614037+00:00"}
+{"a":"marlburrow","m":"Bah nan pour moi ca a pas marché le changement de voix, ou alors t'as pas reboot le bot","t":"2026-02-12T00:08:48.063056280+00:00"}
+{"a":"🤖 Marlbot","m":"Ah non, le changement de voix c'est pas encore implémenté dans le bot. J'ai juste ajouté le feedback pour que le cron d'amélioration s'en charge à son prochain passage. Pour l'instant la voix est...","t":"2026-02-12T00:09:00.512998690+00:00"}

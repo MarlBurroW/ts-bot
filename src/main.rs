@@ -2,7 +2,7 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
-use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
+use ts3_bot::utils::{truncate_str, parse_duration_str, format_duration_ms, format_uptime, format_connection_duration, save_language_prefs, record_history, load_chat_history, update_bot_nickname};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
@@ -1177,7 +1177,6 @@ async fn main() -> Result<()> {
                                                                     let ch_name = state.channels.get(&ch_id)
                                                                         .map(|c| c.name.clone())
                                                                         .unwrap_or_else(|| format!("Channel #{}", ch_id.0));
-                                                                    // Collect client data: (name, flags_str, uid_option)
                                                                     let mut clients_data: Vec<(String, String, Option<String>)> = Vec::new();
                                                                     for c in state.clients.values() {
                                                                         if c.channel != ch_id { continue; }
@@ -1214,10 +1213,7 @@ async fn main() -> Result<()> {
                                                                         .and_then(|u| ct.get(u))
                                                                         .map(|since| {
                                                                             let secs = now.duration_since(*since).as_secs();
-                                                                            if secs < 60 { format!(" ⏱{}s", secs) }
-                                                                            else if secs < 3600 { format!(" ⏱{}m", secs / 60) }
-                                                                            else if secs < 86400 { format!(" ⏱{}h{}m", secs / 3600, (secs % 3600) / 60) }
-                                                                            else { format!(" ⏱{}j{}h", secs / 86400, (secs % 86400) / 3600) }
+                                                                            format!(" {}", format_connection_duration(secs))
                                                                         })
                                                                         .unwrap_or_default();
                                                                     lines.push(format!("• {}{}{}", name, duration_str, flag_str));
@@ -1280,10 +1276,7 @@ async fn main() -> Result<()> {
                                                                             .and_then(|u| ct.get(u))
                                                                             .map(|since| {
                                                                                 let secs = now.duration_since(*since).as_secs();
-                                                                                if secs < 60 { format!(" ⏱{}s", secs) }
-                                                                                else if secs < 3600 { format!(" ⏱{}m", secs / 60) }
-                                                                                else if secs < 86400 { format!(" ⏱{}h{}m", secs / 3600, (secs % 3600) / 60) }
-                                                                                else { format!(" ⏱{}j{}h", secs / 86400, (secs % 86400) / 3600) }
+                                                                                format!(" {}", format_connection_duration(secs))
                                                                             })
                                                                             .unwrap_or_default();
                                                                         lines.push(format!("• [b]{}[/b] → {} {}", name, ch_name, duration_str));
@@ -1905,31 +1898,9 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower.starts_with("!seen") {
                                                     let query = message.get(5..).unwrap_or("").trim();
                                                     let seen = seen_data.lock().await;
-                                                    if query.is_empty() {
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("👁️ {} utilisateur(s) trackés — !seen <nom> pour chercher", seen.len()),
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                    } else {
-                                                        let query_lower = query.to_lowercase();
-                                                        let matches: Vec<_> = seen.values()
-                                                            .filter(|(name, _)| name.to_lowercase().contains(&query_lower))
-                                                            .collect();
-                                                        let response = if matches.is_empty() {
-                                                            format!("❌ Aucun résultat pour \"{}\"", query)
-                                                        } else if matches.len() == 1 {
-                                                            let (name, ts) = &matches[0];
-                                                            format!("👁️ {} — dernière déconnexion : {}", name, ts)
-                                                        } else {
-                                                            let mut lines = vec![format!("👁️ {} résultats pour \"{}\" :", matches.len(), query)];
-                                                            for (name, ts) in matches.iter().take(5) {
-                                                                lines.push(format!("• {} — {}", name, ts));
-                                                            }
-                                                            lines.join("\n")
-                                                        };
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
-                                                    }
+                                                    let response = commands::seen_response(&seen, query);
                                                     drop(seen);
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(response, &reply_target, reply_sender_id));
                                                 } else if msg_lower.starts_with("!notify") {
                                                     let arg = message.get(7..).unwrap_or("").trim();
                                                     let mut watchers = notify_watchers.lock().await;
