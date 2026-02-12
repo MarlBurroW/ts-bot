@@ -1947,68 +1947,12 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower.starts_with("!notify") {
                                                     let arg = message.get(7..).unwrap_or("").trim();
                                                     let mut watchers = notify_watchers.lock().await;
-                                                    if arg.is_empty() {
-                                                        // Show current watches for this user
-                                                        let sender_uid_str = sender_uid.clone();
-                                                        let my_watches: Vec<String> = watchers.iter()
-                                                            .filter(|(_, v)| v.iter().any(|(_, uid)| uid == &sender_uid_str))
-                                                            .map(|(target, _)| target.clone())
-                                                            .collect();
-                                                        if my_watches.is_empty() {
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                "🔔 Aucune notification active.\n!notify <nom> — être notifié quand quelqu'un se connecte\n!notify clear — tout supprimer".to_string(),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                        } else {
-                                                            let list = my_watches.iter().map(|n| format!("• {}", n)).collect::<Vec<_>>().join("\n");
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("🔔 Tes notifications actives :\n{}\n!notify clear pour tout supprimer", list),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                        }
-                                                    } else if arg.eq_ignore_ascii_case("clear") {
-                                                        let sender_uid_str = sender_uid.clone();
-                                                        let mut removed = 0;
-                                                        watchers.retain(|_, v| {
-                                                            let before = v.len();
-                                                            v.retain(|(_, uid)| uid != &sender_uid_str);
-                                                            removed += before - v.len();
-                                                            !v.is_empty()
-                                                        });
-                                                        if removed > 0 {
-                                                            save_json("data/notify.json", &*watchers);
-                                                        }
-                                                        let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                            format!("🔕 {} notification(s) supprimée(s)", removed),
-                                                            &reply_target, reply_sender_id
-                                                        ));
-                                                    } else {
-                                                        let target_lower = arg.to_lowercase();
-                                                        let sender_uid_str = sender_uid.clone();
-                                                        let sender_name_str = invoker.name.to_string();
-                                                        // Check if already watching this target
-                                                        let entry = watchers.entry(target_lower.clone()).or_insert_with(Vec::new);
-                                                        if entry.iter().any(|(_, uid)| uid == &sender_uid_str) {
-                                                            // Remove the watch (toggle off)
-                                                            entry.retain(|(_, uid)| uid != &sender_uid_str);
-                                                            if entry.is_empty() {
-                                                                let _ = entry;
-                                                                watchers.remove(&target_lower);
-                                                            }
-                                                            save_json("data/notify.json", &*watchers);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("🔕 Notification pour \"{}\" désactivée", arg),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                        } else {
-                                                            entry.push((sender_name_str, sender_uid_str));
-                                                            save_json("data/notify.json", &*watchers);
-                                                            let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
-                                                                format!("🔔 Tu seras notifié quand \"{}\" se connecte ! (!notify {} pour annuler)", arg, arg),
-                                                                &reply_target, reply_sender_id
-                                                            ));
-                                                        }
+                                                    let commands::NotifyResult::Response { message: resp, changed } =
+                                                        commands::notify_command(&mut watchers, arg, &sender_uid, &invoker.name);
+                                                    if changed {
+                                                        save_json("data/notify.json", &*watchers);
                                                     }
+                                                    let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(resp, &reply_target, reply_sender_id));
                                                     drop(watchers);
                                                 } else if msg_lower.starts_with("!afk") {
                                                     let arg = message.get(4..).unwrap_or("").trim();

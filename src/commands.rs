@@ -352,6 +352,91 @@ pub fn history_response(
 }
 
 // ---------------------------------------------------------------------------
+// Notify
+// ---------------------------------------------------------------------------
+
+/// Type alias for the notify watchers map: target_name_lower → Vec<(watcher_name, watcher_uid)>
+pub type NotifyWatchersMap = std::collections::HashMap<String, Vec<(String, String)>>;
+
+/// Result of a `!notify` command.
+pub enum NotifyResult {
+    /// Response message + whether watchers were mutated (needs save).
+    Response { message: String, changed: bool },
+}
+
+/// Handle the `!notify` command. Mutates `watchers` in place and returns the
+/// response message plus whether persistence is needed.
+pub fn notify_command(
+    watchers: &mut NotifyWatchersMap,
+    arg: &str,
+    sender_uid: &str,
+    sender_name: &str,
+) -> NotifyResult {
+    if arg.is_empty() {
+        // Show current watches for this user
+        let my_watches: Vec<String> = watchers
+            .iter()
+            .filter(|(_, v)| v.iter().any(|(_, uid)| uid == sender_uid))
+            .map(|(target, _)| target.clone())
+            .collect();
+        if my_watches.is_empty() {
+            NotifyResult::Response {
+                message: "🔔 Aucune notification active.\n!notify <nom> — être notifié quand quelqu'un se connecte\n!notify clear — tout supprimer".to_string(),
+                changed: false,
+            }
+        } else {
+            let list = my_watches
+                .iter()
+                .map(|n| format!("• {}", n))
+                .collect::<Vec<_>>()
+                .join("\n");
+            NotifyResult::Response {
+                message: format!(
+                    "🔔 Tes notifications actives :\n{}\n!notify clear pour tout supprimer",
+                    list
+                ),
+                changed: false,
+            }
+        }
+    } else if arg.eq_ignore_ascii_case("clear") {
+        let mut removed = 0;
+        watchers.retain(|_, v| {
+            let before = v.len();
+            v.retain(|(_, uid)| uid != sender_uid);
+            removed += before - v.len();
+            !v.is_empty()
+        });
+        NotifyResult::Response {
+            message: format!("🔕 {} notification(s) supprimée(s)", removed),
+            changed: removed > 0,
+        }
+    } else {
+        let target_lower = arg.to_lowercase();
+        let entry = watchers.entry(target_lower.clone()).or_default();
+        if entry.iter().any(|(_, uid)| uid == sender_uid) {
+            // Toggle off
+            entry.retain(|(_, uid)| uid != sender_uid);
+            if entry.is_empty() {
+                watchers.remove(&target_lower);
+            }
+            NotifyResult::Response {
+                message: format!("🔕 Notification pour \"{}\" désactivée", arg),
+                changed: true,
+            }
+        } else {
+            entry.push((sender_name.to_string(), sender_uid.to_string()));
+            NotifyResult::Response {
+                message: format!(
+                    "🔔 Tu seras notifié quand \"{}\" se connecte ! (!notify {} pour annuler)",
+                    arg, arg
+                ),
+                changed: true,
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Poll / Vote
 // ---------------------------------------------------------------------------
 
@@ -791,5 +876,54 @@ mod tests {
             creator: "x".to_string(),
         };
         assert!(matches!(vote(&mut poll, "abc", "uid1", "alice"), VoteResult::Error(_)));
+    }
+
+    // --- Notify tests ---
+
+    #[test]
+    fn test_notify_empty_shows_help() {
+        let mut watchers = NotifyWatchersMap::new();
+        let r = notify_command(&mut watchers, "", "uid1", "alice");
+        let NotifyResult::Response { message, changed } = r;
+        assert!(message.contains("Aucune notification"));
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_notify_add_and_list() {
+        let mut watchers = NotifyWatchersMap::new();
+        let r = notify_command(&mut watchers, "bob", "uid1", "alice");
+        let NotifyResult::Response { message, changed } = r;
+        assert!(message.contains("Tu seras notifié"));
+        assert!(changed);
+        assert_eq!(watchers.len(), 1);
+
+        // List
+        let r2 = notify_command(&mut watchers, "", "uid1", "alice");
+        let NotifyResult::Response { message: msg2, .. } = r2;
+        assert!(msg2.contains("bob"));
+    }
+
+    #[test]
+    fn test_notify_toggle_off() {
+        let mut watchers = NotifyWatchersMap::new();
+        notify_command(&mut watchers, "bob", "uid1", "alice");
+        let r = notify_command(&mut watchers, "bob", "uid1", "alice");
+        let NotifyResult::Response { message, changed } = r;
+        assert!(message.contains("désactivée"));
+        assert!(changed);
+        assert!(watchers.is_empty());
+    }
+
+    #[test]
+    fn test_notify_clear() {
+        let mut watchers = NotifyWatchersMap::new();
+        notify_command(&mut watchers, "bob", "uid1", "alice");
+        notify_command(&mut watchers, "charlie", "uid1", "alice");
+        let r = notify_command(&mut watchers, "clear", "uid1", "alice");
+        let NotifyResult::Response { message, changed } = r;
+        assert!(message.contains("2 notification"));
+        assert!(changed);
+        assert!(watchers.is_empty());
     }
 }
