@@ -40,3 +40,8 @@ Preuve : après restart à 20:36:46, le bot ne log que lui-même (Marlbot1 id:97
 **Diagnostic step** : Ajoute un log INFO dans le handler `!viens` qui dump `state.clients.len()` et les noms+ids des clients connus. Ça confirmera que la map est incomplète.
 
 **Fix probable** : `tsclientlib` devrait normalement peupler `state.clients` avec la liste initiale des clients au connect (c'est la lib qui gère l'état). Si ce n'est pas le cas, il y a peut-être un bug dans comment on utilise la lib, ou il faut attendre que le state sync soit complet avant de servir des commandes. Vérifier aussi si `con.get_state()` retourne bien un snapshot complet ou partiel.
+
+## 2026-02-11 - Changement de voix TTS ne fonctionne pas
+Status: done
+Priority: medium
+Note: Root cause: the OpenClaw plugin was sending `voice: "onyx"` (from static config) on every `speak` command, overriding the bot's runtime default set by `set_voice`. Fix: removed the voice override from the plugin's `deliverReply()` — now `speak` commands don't specify a voice, letting the bot use its runtime default (changeable via `teamspeak_set_voice` tool or `!voice` chat command). The bot already had `set_voice`/`get_voice` WS commands and `!voice` chat command working correctly — only the plugin was bypassing them.
