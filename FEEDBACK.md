@@ -54,7 +54,8 @@ Note: Already implemented! `!speed` command exists in main.rs (line ~1553), pers
 Ajouter une commande `!speed <valeur>` (ex: `!speed 1.0`, `!speed 1.3`) pour changer la vitesse TTS par défaut, similaire à `!voice`. Actuellement la vitesse est hardcodée à 1.15x. La valeur doit être persistée dans `bot_state.json` comme pour voice/volume/muted, et utilisée comme fallback quand aucun `speed:X` n'est spécifié dans `!tts`. Range valide : 0.25 à 4.0.
 
 ## 2026-02-12 - Valider les voix selon le modèle TTS
-Status: pending
+Status: done
 Priority: low
+Note: Implemented in commit 20830ca. Added `valid_voices_for_model()` utility — tts-1/tts-1-hd accept only 6 classic voices (alloy, echo, fable, nova, onyx, shimmer), gpt-4o-mini-tts accepts all 11. Validation applied in 3 places: `!voice` command, `!tts voice:X` prefix, and WS `set_voice` handler. Invalid voices now get a clear error with the list of valid options for the configured model. 3 unit tests added.
 
 Les voix ash, ballad, coral, sage, verse ne sont supportées que par `gpt-4o-mini-tts`, pas par `tts-1`. Le bot les accepte dans `!voice` mais l'API plante ensuite. Soit filtrer les voix invalides selon le modèle configuré, soit passer au modèle `gpt-4o-mini-tts`.
