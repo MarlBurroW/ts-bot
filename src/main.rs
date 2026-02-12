@@ -1506,9 +1506,7 @@ async fn main() -> Result<()> {
                                                                 player.set_volume(vol);
                                                             }
                                                             // Persist volume
-                                                            let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
-                                                            let voice_val = default_voice.read().unwrap().clone();
-                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
+                                                            save_bot_state_field("volume", &vol);
                                                             let emoji = if vol == 0 { "🔇" } else if vol < 50 { "🔈" } else if vol <= 100 { "🔉" } else { "🔊" };
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("{} Volume réglé à {}%", emoji, vol),
@@ -1536,9 +1534,7 @@ async fn main() -> Result<()> {
                                                         if valid_voices.contains(&requested) {
                                                             *default_voice.write().unwrap() = requested.clone();
                                                             // Persist
-                                                            let muted_val = tts_muted.load(std::sync::atomic::Ordering::Relaxed);
-                                                            let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                            save_json_compact("data/bot_state.json", &serde_json::json!({"muted": muted_val, "volume": vol_val, "voice": requested, "speed": *default_speed.read().unwrap()}));
+                                                            save_bot_state_field("voice", &requested);
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                                 format!("🎙️ Voix par défaut changée en [b]{}[/b]", requested),
                                                                 &reply_target, reply_sender_id,
@@ -1579,9 +1575,7 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower == "!mute" {
                                                     tts_muted.store(true, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist mute state
-                                                    let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let voice_val = default_voice.read().unwrap().clone();
-                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": true, "volume": vol_val, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
+                                                    save_bot_state_field("muted", &true);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔇 TTS muté — je reste à l'écoute mais ne parlerai pas.".to_string(),
                                                         &reply_target, reply_sender_id,
@@ -1589,9 +1583,7 @@ async fn main() -> Result<()> {
                                                 } else if msg_lower == "!unmute" {
                                                     tts_muted.store(false, std::sync::atomic::Ordering::Relaxed);
                                                     // Persist unmute state
-                                                    let vol_val = tts_volume.load(std::sync::atomic::Ordering::Relaxed);
-                                                    let voice_val = default_voice.read().unwrap().clone();
-                                                    save_json_compact("data/bot_state.json", &serde_json::json!({"muted": false, "volume": vol_val, "voice": voice_val, "speed": *default_speed.read().unwrap()}));
+                                                    save_bot_state_field("muted", &false);
                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(
                                                         "🔊 TTS réactivé — je parle à nouveau !".to_string(),
                                                         &reply_target, reply_sender_id,
