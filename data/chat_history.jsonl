@@ -61,3 +61,22 @@
 {"a":"🤖 Marlbot","m":"Salut Nicolas !","t":"2026-02-12T00:07:44.660614037+00:00"}
 {"a":"marlburrow","m":"Bah nan pour moi ca a pas marché le changement de voix, ou alors t'as pas reboot le bot","t":"2026-02-12T00:08:48.063056280+00:00"}
 {"a":"🤖 Marlbot","m":"Ah non, le changement de voix c'est pas encore implémenté dans le bot. J'ai juste ajouté le feedback pour que le cron d'amélioration s'en charge à son prochain passage. Pour l'instant la voix est...","t":"2026-02-12T00:09:00.512998690+00:00"}
+{"a":"marlburrow","m":"test","t":"2026-02-12T00:23:56.304637145+00:00"}
+{"a":"🤖 Marlbot","m":"Reçu ! 👍","t":"2026-02-12T00:24:01.402539392+00:00"}
+{"a":"marlburrow","m":"La CI de PinchChat fail, faudrait le cron vérifie l'état de la CI en début de session","t":"2026-02-12T00:56:33.197204445+00:00"}
+{"a":"🤖 Marlbot","m":"C'est noté ! J'ai ajouté en priorité haute que le cron doit checker la CI en premier à chaque session et la réparer si elle est cassée. Au prochain passage il s'en occupera direct.","t":"2026-02-12T00:56:54.928353255+00:00"}
+{"a":"marlburrow","m":"Le changement de voice ne fonctionne toujours pas sur le bot TS.\nPar exemple je fait \n!voice nova\net\n!tts test\nEt j'ai toujours la voix qui semble etre \"echo\"\net hors !tts la voix est toujours onnyx, quoi que je fasse","t":"2026-02-12T00:58:22.881511219+00:00"}
+{"a":"🤖 Marlbot","m":"La commande `!voice` est listée dans le help mais semble pas avoir de handler implémenté. Voyons où les commandes sont routées :","t":"2026-02-12T01:00:45.818549613+00:00"}
+{"a":"🤖 Marlbot","m":"OK, la commande `!voice` fonctionne — elle met à jour `default_voice` et le persiste dans `bot_state.json`. Vérifions maintenant comment la voix est utilisée quand OpenClaw envoie du TTS :","t":"2026-02-12T01:00:47.211647189+00:00"}
+{"a":"🤖 Marlbot","m":"Le code a l'air correct — `effective_voice` utilise la `default_voice` quand pas de voix explicite. Vérifions l'état persisté et les logs :","t":"2026-02-12T01:00:48.933714552+00:00"}
+{"a":"🤖 Marlbot","m":"Je vois le problème ! Les logs montrent clairement :\n\n1. **`!voice nova`** est reçu à 00:57:19 ✅\n2. **`!tts test`** à 00:57:22 → envoie `voice: echo` au lieu de `nova` ❌\n3. Le TTS d'OpenClaw...","t":"2026-02-12T01:00:50.292827996+00:00"}
+{"a":"🤖 Marlbot","m":"Trouvé ! **Bug 1** : dans `!tts`, quand aucune voix n'est spécifiée (`tts_voice` est `None`), le code passe `None` à `player_ref.speak()` qui tombe sur `default_voice` du `HttpTtsSynthesizer` (ini...","t":"2026-02-12T01:00:54.828371343+00:00"}
+{"a":"🤖 Marlbot","m":"OK c'est clair. Le `HttpTtsSynthesizer` est initialisé avec `config.tts_voice` (du fichier config, probablement \"onyx\") et ne connaît pas le `default_voice` runtime. Il y a deux chemins :\n\n1. **Open...","t":"2026-02-12T01:00:56.463565720+00:00"}
+{"a":"🤖 Marlbot","m":"Le WebSocket `Speak` a `voice: Option<String>`. Quand OpenClaw envoie un speak, il inclut probablement la voix. Vérifions le plugin OpenClaw :","t":"2026-02-12T01:01:00.491987592+00:00"}
+{"a":"🤖 Marlbot","m":"OK le plugin n'envoie PAS de voix — ça laisse le bot utiliser son default. Mais le log montre `voice: onyx`. Voyons comment le bot gère le speak WebSocket :","t":"2026-02-12T01:01:01.939724991+00:00"}
+{"a":"🤖 Marlbot","m":"Hmm, le handling des actions WS est probablement dans un autre fichier :","t":"2026-02-12T01:01:03.694544379+00:00"}
+{"a":"🤖 Marlbot","m":"OK donc le speak WS envoie `TtsRequest { text, voice: None, speed: None }` quand le plugin n'envoie pas de voix. Ça arrive dans la queue TTS, et le consumer dans main.rs à la ligne 687 fait :\n\n```ru...","t":"2026-02-12T01:01:04.643636459+00:00"}
+{"a":"🤖 Marlbot","m":"Le `bot_state.json` a `\"voice\": \"nova\"` donc au prochain restart le bot devrait lire \"nova\". Mais vu que le log de 00:56:54 montre `voice: onyx`, c'est que le bot a été démarré AVANT le `!voice no...","t":"2026-02-12T01:01:07.551496968+00:00"}
+{"a":"🤖 Marlbot","m":"Voilà ! La config `.env` a `TTS_VOICE=echo`. Donc :\n\n1. **`!tts` sans voice:** → `None` → `HttpTtsSynthesizer.default_voice` = \"echo\" (de la config)\n2. **Réponses OpenClaw via WS** → `None` ...","t":"2026-02-12T01:01:12.908279605+00:00"}
+{"a":"K4R†AL","m":"tg","t":"2026-02-12T01:01:23.559086321+00:00"}
+{"a":"🤖 Marlbot","m":"😘","t":"2026-02-12T01:01:28.364722654+00:00"}

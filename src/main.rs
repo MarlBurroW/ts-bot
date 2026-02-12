@@ -2255,6 +2255,8 @@ async fn main() -> Result<()> {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply("⏳ Rate limit : max 5 TTS par minute. Attends un peu !".to_string(), &reply_target, reply_sender_id));
                                                         } else if let (Some(ref player), Some(ref synth)) = (&audio_player, &tts_synth) {
                                                         let sender_name = invoker.name.to_string();
+                                                        // Resolve voice: explicit > runtime default (from !voice / set_voice)
+                                                        let tts_voice = tts_voice.or_else(|| Some(default_voice.read().unwrap().clone()));
                                                         let voice_label = tts_voice.as_deref().unwrap_or("default");
                                                         let speed_label = tts_speed.map_or("default".to_string(), |s| format!("{:.1}x", s));
                                                         info!("🔊 TTS request from {} (voice: {}, speed: {}): '{}'", sender_name, voice_label, speed_label, tts_text);
