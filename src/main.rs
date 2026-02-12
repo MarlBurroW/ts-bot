@@ -2,7 +2,7 @@ mod ts3;
 
 use anyhow::Result;
 use ts3_bot::models::{BotConfig, MessageEvent, MessageType, WebSocketEvent, TranscriptionEvent, ActiveDuel, ActivePoll, BotStats, LastSpokenInfo, NotifyWatchers, Reminder, SharedChatHistory};
-use ts3_bot::utils::{truncate_str, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model};
+use ts3_bot::utils::{truncate_str, format_uptime, format_connection_duration, save_language_prefs, save_bot_state_field, record_history, load_chat_history, update_bot_nickname, valid_voices_for_model, spawn_delayed_channel_kick};
 use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_compact, ensure_data_dir};
 use ts3_bot::commands;
 use ts3_bot::websocket;
@@ -1589,19 +1589,7 @@ async fn main() -> Result<()> {
                                                     match commands::roulette_command(&invoker.name) {
                                                         commands::RouletteResult::Bang(msg) => {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
-                                                            let mut sender_for_kick = ts3_sender.clone();
-                                                            let kick_clid = reply_sender_id;
-                                                            tokio::spawn(async move {
-                                                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                                                use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                                                                let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientkick");
-                                                                cmd.write_arg("clid", &kick_clid);
-                                                                cmd.write_arg("reasonid", &4u32);
-                                                                cmd.write_arg("reasonmsg", &"💀 Roulette russe !");
-                                                                if let Err(e) = sender_for_kick.send_command(cmd).await {
-                                                                    warn!("Failed to kick for roulette: {:?}", e);
-                                                                }
-                                                            });
+                                                            spawn_delayed_channel_kick(ts3_sender.clone(), reply_sender_id, "💀 Roulette russe !", 1500);
                                                         }
                                                         commands::RouletteResult::Survived(msg) => {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
@@ -1628,18 +1616,7 @@ async fn main() -> Result<()> {
                                                                     drop(duel_guard);
                                                                     let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                                     if let Some(loser_clid) = loser_clid {
-                                                                        let mut sender_for_kick = ts3_sender.clone();
-                                                                        tokio::spawn(async move {
-                                                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                                                            use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
-                                                                            let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientkick");
-                                                                            cmd.write_arg("clid", &loser_clid);
-                                                                            cmd.write_arg("reasonid", &4u32);
-                                                                            cmd.write_arg("reasonmsg", &"💀 Perdu au duel !");
-                                                                            if let Err(e) = sender_for_kick.send_command(cmd).await {
-                                                                                warn!("Failed to kick duel loser: {:?}", e);
-                                                                            }
-                                                                        });
+                                                                        spawn_delayed_channel_kick(ts3_sender.clone(), loser_clid, "💀 Perdu au duel !", 1500);
                                                                     }
                                                                 }
                                                             }

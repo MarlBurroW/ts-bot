@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use tracing::info;
+use tracing::{info, warn};
 
 /// All voices supported by tts-1 (the classic 6).
 const TTS1_VOICES: [&str; 6] = ["alloy", "echo", "fable", "nova", "onyx", "shimmer"];
@@ -315,4 +315,26 @@ mod tests {
         // Unknown models get all voices (permissive)
         assert_eq!(super::valid_voices_for_model("kokoro").len(), 11);
     }
+}
+
+/// Spawn a delayed channel kick (used by !roulette and !duel).
+/// Waits `delay_ms` before sending the kick command so the user can see the result message.
+pub fn spawn_delayed_channel_kick(
+    mut sender: tsclientlib::sync::SyncConnectionHandle,
+    client_id: u16,
+    reason: &str,
+    delay_ms: u64,
+) {
+    let reason = reason.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientkick");
+        cmd.write_arg("clid", &client_id);
+        cmd.write_arg("reasonid", &4u32);
+        cmd.write_arg("reasonmsg", &reason);
+        if let Err(e) = sender.send_command(cmd).await {
+            warn!("Failed to kick client {}: {:?}", client_id, e);
+        }
+    });
 }
