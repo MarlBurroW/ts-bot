@@ -1,7 +1,8 @@
 use anyhow::Result;
 use serde::Deserialize;
+use std::fmt;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct BotConfig {
     #[serde(rename = "ts3_server")]
     pub ts3_server: String,
@@ -62,5 +63,39 @@ impl BotConfig {
         dotenvy::dotenv().ok();
         let config: BotConfig = envy::from_env()?;
         Ok(config)
+    }
+}
+
+/// Custom Debug that redacts secrets so they never leak into logs.
+/// Reveals only whether each secret is set and its length.
+impl fmt::Debug for BotConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn redact(opt: &Option<String>) -> String {
+            match opt {
+                None => "None".to_string(),
+                Some(s) if s.is_empty() => "Some(\"\")".to_string(),
+                Some(s) => format!("Some(\"***[{} chars]\")", s.len()),
+            }
+        }
+        f.debug_struct("BotConfig")
+            .field("ts3_server", &self.ts3_server)
+            .field("ts3_nickname", &self.ts3_nickname)
+            .field("ts3_password", &redact(&self.ts3_password))
+            .field("ts3_channel", &self.ts3_channel)
+            .field("ws_host", &self.ws_host)
+            .field("ws_port", &self.ws_port)
+            .field("log_level", &self.log_level)
+            .field("log_file", &self.log_file)
+            .field("reconnect_max_attempts", &self.reconnect_max_attempts)
+            .field("reconnect_initial_delay_ms", &self.reconnect_initial_delay_ms)
+            .field("reconnect_max_delay_ms", &self.reconnect_max_delay_ms)
+            .field("tts_enabled", &self.tts_enabled)
+            .field("tts_api_url", &self.tts_api_url)
+            .field("tts_api_key", &redact(&self.tts_api_key))
+            .field("tts_model", &self.tts_model)
+            .field("tts_voice", &self.tts_voice)
+            .field("elevenlabs_api_key", &redact(&self.elevenlabs_api_key))
+            .field("elevenlabs_model", &self.elevenlabs_model)
+            .finish()
     }
 }
