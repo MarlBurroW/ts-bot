@@ -26,7 +26,7 @@ pub struct TtsRegistry {
 
 /// Fetch voices from ElevenLabs API, filtered to FR voices + cloned voices.
 /// Returns Vec<(friendly_name, voice_id)>.
-fn fetch_elevenlabs_voices(api_key: &str) -> Vec<(String, String)> {
+pub fn fetch_elevenlabs_voices(api_key: &str) -> Vec<(String, String)> {
     let client = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(10))

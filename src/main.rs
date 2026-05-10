@@ -2393,16 +2393,20 @@ async fn main() -> Result<()> {
     // Spawn WebSocket server task (with TTS channel if enabled)
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
 
-    // Compute all valid voices for WS server (OpenAI + ElevenLabs if key is set)
+    // Compute all valid voices for WS server (OpenAI + ElevenLabs if key is set).
+    // For ElevenLabs we fetch the actual live voices from the API so the WS
+    // set_voice command accepts the same voices the registry exposes at
+    // runtime (FR + cloned voices), rather than a stale hardcoded list.
     let all_valid_voices_for_ws: Option<Vec<String>> = if tts_enabled {
         let mut voices = valid_voices_for_model(&ws_config.tts_model);
-        if ws_config.elevenlabs_api_key.as_ref().is_some_and(|k| !k.is_empty()) {
-            // Same curated list as in registry.rs
-            for name in &["adam", "antoni", "bella", "domi", "elli", "josh", "rachel", "sam"] {
-                voices.push(name.to_string());
+        if let Some(key) = ws_config.elevenlabs_api_key.as_ref().filter(|k| !k.is_empty()) {
+            let el_voices = ts3_bot::tts::registry::fetch_elevenlabs_voices(key);
+            for (name, _id) in el_voices {
+                voices.push(name.to_lowercase());
             }
         }
         voices.sort();
+        voices.dedup();
         Some(voices)
     } else {
         None

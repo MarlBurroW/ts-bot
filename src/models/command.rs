@@ -202,9 +202,13 @@ impl WebSocketCommand {
                 Ok(())
             }
             Self::SetVoice { voice, .. } => {
-                let valid = ["alloy","ash","ballad","coral","echo","fable","nova","onyx","sage","shimmer","verse"];
-                if !valid.contains(&voice.as_str()) {
-                    return Err(format!("Invalid voice '{}'. Valid: {}", voice, valid.join(", ")));
+                // Only sanity-check that the voice is non-empty here.
+                // The actual validation against the live voice registry
+                // (OpenAI built-ins + ElevenLabs voices loaded at startup)
+                // is performed by the WebSocket handler, which has access
+                // to `all_valid_voices`.
+                if voice.trim().is_empty() {
+                    return Err("Voice name must not be empty".to_string());
                 }
                 Ok(())
             }
