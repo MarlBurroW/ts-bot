@@ -1,10 +1,16 @@
 # TS3 Bot - WebSocket API Reference
 
-**Version**: 1.1.0
+**Version**: 1.2.0
 **Protocol**: WebSocket (RFC 6455)
 **Message Format**: JSON (UTF-8 text frames only)
 **Default Endpoint**: `ws://127.0.0.1:8080/ws`
 **Authentication**: None (localhost-only deployment)
+
+> **Note**: This document covers the original 5 commands that were stable
+> at v1.0.0. The current Rust enum (`src/models/command.rs::WebSocketCommand`)
+> exposes additional commands (server admin, channel management, listeners,
+> language, etc.) — see [Additional Commands](#additional-commands) for the
+> list. The reference for each is the Rust source until this doc catches up.
 
 ---
 
@@ -132,22 +138,54 @@ Returns the full TS3 server state: all channels, all connected clients, and the 
 
 #### Success Response
 
+In the current implementation, `get_status` produces **two** `command_response`
+events (immediate ack with `data: null`, then the final response with the
+actual payload — see [Multiple Responses](#multiple-responses)).
+
+The payload returned in the final response contains many more fields than
+historically documented. Minimal example showing the canonical fields plus
+a sample of the additional ones:
+
 ```json
 {
   "type": "command_response",
   "command_id": "cmd-001",
   "success": true,
   "data": {
-    "own_client_id": 42,
+    "own_client_id": 10788,
     "channels": [
-      { "id": 1, "name": "Default Channel", "parent_id": 0 },
-      { "id": 5, "name": "Gaming", "parent_id": 1 },
-      { "id": 12, "name": "AFK", "parent_id": 0 }
+      {
+        "id": 5,
+        "name": "Gaming",
+        "parent_id": 1,
+        "order": 162,
+        "codec": "OpusVoice",
+        "codec_quality": 5,
+        "max_clients": "Unlimited",
+        "has_password": false,
+        "forced_silence": false,
+        "needed_talk_power": 0,
+        "subscribed": false,
+        "topic": ""
+      }
     ],
     "clients": [
-      { "id": 3, "name": "Alice", "channel_id": 5 },
-      { "id": 7, "name": "Bob", "channel_id": 5 },
-      { "id": 42, "name": "Marlbot", "channel_id": 5 }
+      {
+        "id": 10788,
+        "name": "Marlbot",
+        "channel_id": 5,
+        "uid": [54, 85, 98, 150, 49, 248, 114, 247, 230, 29, 243, 32, 232, 37, 19, 224, 241, 174, 168, 67],
+        "database_id": 231,
+        "channel_group": 8,
+        "server_groups": [9],
+        "talk_power": 75,
+        "input_muted": false,
+        "output_muted": false,
+        "is_recording": false,
+        "is_priority_speaker": false,
+        "is_channel_commander": false,
+        "country_code": "FR"
+      }
     ]
   }
 }
@@ -157,15 +195,35 @@ Returns the full TS3 server state: all channels, all connected clients, and the 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `own_client_id` | `number` | The bot's TS3 client ID in this session |
-| `channels` | `array` | All channels on the server |
-| `channels[].id` | `number` | Channel ID |
-| `channels[].name` | `string` | Channel display name |
-| `channels[].parent_id` | `number` | Parent channel ID (`0` = root) |
-| `clients` | `array` | All connected clients |
-| `clients[].id` | `number` | Client session ID |
-| `clients[].name` | `string` | Client display name |
-| `clients[].channel_id` | `number` | Channel the client is currently in |
+| `own_client_id` | `number` | The bot's TS3 session client ID. |
+| `channels` | `array` | All channels on the server. |
+| `channels[].id` | `number` | Channel ID. |
+| `channels[].name` | `string` | Channel display name. |
+| `channels[].parent_id` | `number` | Parent channel ID (`0` = root). |
+| `channels[].order` | `number` | Sort order among siblings. |
+| `channels[].codec` | `string` | TS3 codec name (e.g. `"OpusVoice"`, `"OpusMusic"`). |
+| `channels[].codec_quality` | `number` | Codec quality 0–10. |
+| `channels[].max_clients` | `string` | Either `"Unlimited"` or `"Limited(N)"`. |
+| `channels[].has_password` | `boolean` | `true` if the channel is password-protected. |
+| `channels[].forced_silence` | `boolean` | `true` if talk power requirement silences regular users. |
+| `channels[].needed_talk_power` | `number` | Minimum talk power required to speak. |
+| `channels[].subscribed` | `boolean` | Whether the bot is subscribed to channel events. |
+| `channels[].topic` | `string` | Channel topic. |
+| `clients` | `array` | All connected clients. |
+| `clients[].id` | `number` | Session client ID (volatile, changes each reconnection). |
+| `clients[].name` | `string` | Display name. |
+| `clients[].channel_id` | `number` | Current channel ID. |
+| `clients[].uid` | `number[]` | **Permanent unique ID as a byte array**, not a base64 string. Encode to base64 client-side if you need a string identifier. |
+| `clients[].database_id` | `number` | TS3 server-database ID for the user. |
+| `clients[].channel_group` | `number` | Channel group ID. |
+| `clients[].server_groups` | `number[]` | Server group IDs. |
+| `clients[].talk_power` | `number` | Current talk power. |
+| `clients[].input_muted` | `boolean` | Microphone muted. |
+| `clients[].output_muted` | `boolean` | Speakers muted. |
+| `clients[].is_recording` | `boolean` | Client is currently recording. |
+| `clients[].is_priority_speaker` | `boolean` | Priority speaker flag. |
+| `clients[].is_channel_commander` | `boolean` | Channel commander flag. |
+| `clients[].country_code` | `string` | ISO 3166-1 alpha-2 country code (best-effort). |
 
 #### Error Responses
 
@@ -241,8 +299,6 @@ Move the bot to a different TS3 channel.
 
 Send a text message to the current TS3 channel or to a specific user (private message).
 
-> **Status: NOT IMPLEMENTED.** This command currently returns an error: `"Not implemented yet"`. It is listed here for forward compatibility.
-
 #### Request
 
 ```json
@@ -251,7 +307,8 @@ Send a text message to the current TS3 channel or to a specific user (private me
   "command_id": "cmd-003",
   "target": "channel",
   "recipient": null,
-  "content": "Hello from OpenClaw!"
+  "content": "Hello from a WS client!",
+  "tts": false
 }
 ```
 
@@ -259,9 +316,21 @@ Send a text message to the current TS3 channel or to a specific user (private me
 |-------|------|----------|-------------|
 | `type` | `string` | Yes | Must be `"send_message"` |
 | `command_id` | `string` | No | Client-provided correlation ID |
-| `target` | `string` | Yes | `"channel"` or `"user"` |
-| `recipient` | `number` | Conditional | TS3 client ID of the target user. **Required** if `target` is `"user"`, ignored if `"channel"`. |
+| `target` | `string` | Yes | `"channel"`, `"private"` (alias `"user"`) or `"server"` |
+| `recipient` | `string` | Conditional | TS3 session client ID of the target user, **as a string** (e.g. `"11033"`). **Required** if `target` is `"private"`/`"user"`, ignored otherwise. |
 | `content` | `string` | Yes | Message text. Must be non-empty. Max 8192 characters. |
+| `tts` | `boolean` | No | If `true`, the bot will also speak the content via TTS in addition to sending the chat message. Default: `false`. |
+
+> **Important**: `recipient` is a **string**, not a number. Sending a JSON
+> integer (e.g. `"recipient": 11033`) will fail at parse time with
+> `"invalid type: integer N, expected a string"`.
+
+#### Success Response
+
+Produces two `command_response` events:
+
+1. Immediate ack: `{ success: true, message: "Sending message..." }`
+2. Final result: `{ success: true, message: "Message sent (channel)" }` (or `(private)` / `(server)`)
 
 #### Validation Errors
 
@@ -269,7 +338,7 @@ Send a text message to the current TS3 channel or to a specific user (private me
 |---------------|-------|
 | `"Validation error: content is empty"` | `content` is an empty string |
 | `"Validation error: content exceeds 8192 characters"` | `content` is too long |
-| `"Validation error: recipient required for target=user"` | `target` is `"user"` but `recipient` is missing/null |
+| `"Private message requires recipient client_id"` | `target` is `"private"`/`"user"` but `recipient` is missing or not a numeric string |
 
 ---
 
@@ -375,8 +444,8 @@ Sent **immediately** after WebSocket connection is established.
 ```json
 {
   "type": "welcome",
-  "bot_nickname": "Marlbot",
-  "ts3_server": "ts3.example.com:9987",
+  "nickname": "Marlbot",
+  "server": "ts3.example.com:9987",
   "connection_status": "connected",
   "api_version": "1.0.0"
 }
@@ -385,8 +454,8 @@ Sent **immediately** after WebSocket connection is established.
 | Field | Type | Description |
 |-------|------|-------------|
 | `type` | `string` | Always `"welcome"` |
-| `bot_nickname` | `string` | Bot's display name on TeamSpeak |
-| `ts3_server` | `string` | TS3 server address (may include port) |
+| `nickname` | `string` | Bot's display name on TeamSpeak. (Earlier drafts of this doc called this field `bot_nickname` — the wire format is `nickname`.) |
+| `server` | `string` | TS3 server address (may include port). (Earlier drafts called this `ts3_server`.) |
 | `connection_status` | `string` | Current TS3 connection state: `"connected"`, `"disconnected"`, or `"reconnecting"` |
 | `api_version` | `string` | API version string (semver). Currently `"1.0.0"`. |
 
@@ -956,7 +1025,35 @@ When the bot shuts down, the WebSocket connection is closed with code `1001` (Go
 
 ---
 
-## 9. TypeScript Type Definitions
+## 9. Additional Commands {#additional-commands}
+
+The Rust enum `WebSocketCommand` (`src/models/command.rs`) currently
+exposes more commands than the five fully documented above. Their wire
+format follows the same `{ type, command_id, ...fields }` convention.
+Until this reference catches up, treat the Rust source as the
+authoritative spec.
+
+| Command type | Purpose (one-liner) |
+|--------------|---------------------|
+| `poke_client` | Send a poke (popup notification) to a specific client. |
+| `kick_client` | Kick a client from the channel or the server. |
+| `move_client` | Move another client to a specific channel. |
+| `set_nickname` | Change the bot's own nickname. |
+| `get_server_info` | Get TS3 virtual server metadata (name, welcome message, etc.). |
+| `create_channel` | Create a new channel (optionally temporary, with topic / description / password). |
+| `set_channel_description` | Update an existing channel's description. |
+| `delete_channel` | Delete a channel. |
+| `activate_listener` | Start transcribing voice from a specific client (Whisper STT). |
+| `deactivate_listener` | Stop transcribing voice from a specific client. |
+| `set_language` | Override the language used for STT for a specific client. |
+
+Validation rules and exact request/response payloads for these commands
+are defined in `src/models/command.rs` and handled in
+`src/websocket/handlers.rs` and `src/websocket/server.rs`.
+
+---
+
+## 10. TypeScript Type Definitions
 
 For convenience, here are complete TypeScript type definitions for the API:
 
@@ -980,9 +1077,11 @@ interface MoveChannelCommand {
 interface SendMessageCommand {
   type: "send_message";
   command_id?: string;
-  target: "channel" | "user";
-  recipient?: number | null;
+  target: "channel" | "private" | "user" | "server";
+  /** Stringified TS3 session client ID. Required if target is "private"/"user". */
+  recipient?: string | null;
   content: string;
+  tts?: boolean;
 }
 
 interface SpeakCommand {
@@ -1010,8 +1109,10 @@ type WebSocketCommand =
 
 interface WelcomeEvent {
   type: "welcome";
-  bot_nickname: string;
-  ts3_server: string;
+  /** Bot's display name on TeamSpeak. (Earlier drafts called this `bot_nickname`.) */
+  nickname: string;
+  /** TS3 server address. (Earlier drafts called this `ts3_server`.) */
+  server: string;
   connection_status: "connected" | "disconnected" | "reconnecting";
   api_version: string;
 }
@@ -1115,11 +1216,32 @@ interface ChannelInfo {
   id: number;
   name: string;
   parent_id: number;
+  order: number;
+  codec: string;
+  codec_quality: number;
+  max_clients: string;       // "Unlimited" | "Limited(N)"
+  has_password: boolean;
+  forced_silence: boolean;
+  needed_talk_power: number;
+  subscribed: boolean;
+  topic: string;
 }
 
 interface ClientInfo {
   id: number;
   name: string;
   channel_id: number;
+  /** Permanent unique ID as a byte array, NOT a base64 string. */
+  uid: number[];
+  database_id: number;
+  channel_group: number;
+  server_groups: number[];
+  talk_power: number;
+  input_muted: boolean;
+  output_muted: boolean;
+  is_recording: boolean;
+  is_priority_speaker: boolean;
+  is_channel_commander: boolean;
+  country_code: string;
 }
 ```
