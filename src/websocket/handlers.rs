@@ -20,6 +20,8 @@ pub enum CommandAction {
     PokeClient { command_id: Option<String>, client_id: u64, message: String },
     /// Kick a client from channel or server
     KickClient { command_id: Option<String>, client_id: u64, reason: String, reason_id: u8 },
+    /// Ban a client (0s = permanent)
+    BanClient { command_id: Option<String>, client_id: u64, duration_seconds: u64, reason: String },
     /// Move a client to a different channel
     MoveClient { command_id: Option<String>, client_id: u64, channel_id: u64, password: Option<String> },
     /// Change the bot's nickname
@@ -170,6 +172,15 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
                 CommandAction::KickClient { command_id, client_id, reason: reason.unwrap_or_default(), reason_id },
             )
         }
+        WebSocketCommand::BanClient { command_id, client_id, duration_seconds, reason } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Banning client...".to_string())),
+            CommandAction::BanClient {
+                command_id,
+                client_id,
+                duration_seconds: duration_seconds.unwrap_or(0),
+                reason: reason.unwrap_or_default(),
+            },
+        ),
         WebSocketCommand::MoveClient { command_id, client_id, channel_id, password } => (
             WebSocketEvent::command_success(command_id.clone(), Some("Moving client...".to_string())),
             CommandAction::MoveClient { command_id, client_id, channel_id, password },

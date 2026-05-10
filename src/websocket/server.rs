@@ -618,6 +618,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 "Kick failed",
                             ).await;
                         }
+                        CommandAction::BanClient { command_id, client_id, duration_seconds, reason } => {
+                            let duration_label = if duration_seconds == 0 {
+                                "permanent".to_string()
+                            } else {
+                                format!("{}s", duration_seconds)
+                            };
+                            send_ts3_cmd(
+                                &ts3_handle, &event_tx, command_id,
+                                |cmd| {
+                                    cmd.write_arg("clid", &(client_id as u16));
+                                    cmd.write_arg("time", &duration_seconds);
+                                    if !reason.is_empty() { cmd.write_arg("banreason", &reason); }
+                                },
+                                "banclient",
+                                format!("Banned client {} ({})", client_id, duration_label),
+                                "Ban failed",
+                            ).await;
+                        }
                         CommandAction::MoveClient { command_id, client_id, channel_id, password } => {
                             send_ts3_cmd(
                                 &ts3_handle, &event_tx, command_id,

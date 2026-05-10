@@ -40,6 +40,14 @@ pub enum WebSocketCommand {
         /// "channel" or "server" (default: "server")
         kick_type: Option<String>,
     },
+    BanClient {
+        command_id: Option<String>,
+        client_id: u64,
+        /// Ban duration in seconds (None or 0 = permanent)
+        duration_seconds: Option<u64>,
+        /// Optional ban reason
+        reason: Option<String>,
+    },
     MoveClient {
         command_id: Option<String>,
         client_id: u64,
@@ -141,6 +149,7 @@ impl WebSocketCommand {
             Self::StopSpeaking { command_id, .. } => command_id.as_deref(),
             Self::PokeClient { command_id, .. } => command_id.as_deref(),
             Self::KickClient { command_id, .. } => command_id.as_deref(),
+            Self::BanClient { command_id, .. } => command_id.as_deref(),
             Self::MoveClient { command_id, .. } => command_id.as_deref(),
             Self::SetNickname { command_id, .. } => command_id.as_deref(),
             Self::GetServerInfo { command_id, .. } => command_id.as_deref(),
