@@ -39,6 +39,11 @@ pub struct BotConfig {
     pub tts_model: String,
     #[serde(rename = "tts_voice", default = "default_tts_voice")]
     pub tts_voice: String,
+
+    #[serde(rename = "elevenlabs_api_key", default)]
+    pub elevenlabs_api_key: Option<String>,
+    #[serde(rename = "elevenlabs_model", default = "default_elevenlabs_model")]
+    pub elevenlabs_model: String,
 }
 
 fn default_ws_host() -> String { "127.0.0.1".to_string() }
@@ -50,6 +55,7 @@ fn default_reconnect_max_delay() -> u64 { 60000 }
 fn default_tts_api_url() -> String { "https://api.openai.com/v1/audio/speech".to_string() }
 fn default_tts_model() -> String { "tts-1".to_string() }
 fn default_tts_voice() -> String { "nova".to_string() }
+fn default_elevenlabs_model() -> String { "eleven_multilingual_v2".to_string() }
 
 impl BotConfig {
     pub fn from_env() -> Result<Self> {

@@ -7,7 +7,7 @@ use ts3_bot::persistence::{load_json, load_json_logged, save_json, save_json_com
 use ts3_bot::commands;
 use ts3_bot::websocket;
 use ts3_bot::websocket::TtsRequest;
-use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, TtsSynthesizer};
+use ts3_bot::tts::{AudioPlayer, HttpTtsSynthesizer, ElevenLabsTtsSynthesizer, TtsRegistry, TtsSynthesizer};
 use tracing::{error, info, warn, debug};
 use ts3::client::TS3Client;
 use futures::prelude::*;
@@ -576,19 +576,32 @@ async fn main() -> Result<()> {
                     None
                 };
 
-                // Initialize TTS synthesizer (HTTP-based, calls external TTS service)
-                let tts_synth: Option<Arc<dyn TtsSynthesizer>> = if config.tts_enabled {
-                    let synth = HttpTtsSynthesizer::new(
+                // Initialize TTS synthesizer (registry with OpenAI + optional ElevenLabs)
+                let tts_registry: Option<Arc<TtsRegistry>> = if config.tts_enabled {
+                    let openai_synth = HttpTtsSynthesizer::new(
                         &config.tts_api_url,
                         &config.tts_model,
                         &config.tts_voice,
                         config.tts_api_key.clone(),
                     );
                     info!("HttpTtsSynthesizer initialized (url: {}, voice: {})", config.tts_api_url, config.tts_voice);
-                    Some(Arc::new(synth))
+
+                    let elevenlabs_synth = config.elevenlabs_api_key.as_ref()
+                        .filter(|k| !k.is_empty())
+                        .map(|key| {
+                            info!("ElevenLabs TTS initialized (model: {})", config.elevenlabs_model);
+                            ElevenLabsTtsSynthesizer::new(key.clone(), config.elevenlabs_model.clone())
+                        });
+
+                    let openai_voices = valid_voices_for_model(&config.tts_model);
+                    let elevenlabs_key_ref = config.elevenlabs_api_key.as_deref()
+                        .filter(|k| !k.is_empty());
+                    let registry = TtsRegistry::new(openai_synth, elevenlabs_synth, openai_voices, elevenlabs_key_ref);
+                    Some(Arc::new(registry))
                 } else {
                     None
                 };
+                let tts_synth: Option<Arc<dyn TtsSynthesizer>> = tts_registry.clone().map(|r| r as Arc<dyn TtsSynthesizer>);
 
                 // Pre-generate cached wake word confirmation audio
                 let wake_confirmation_frames: Option<Arc<Vec<Vec<u8>>>> = if let Some(ref synth) = tts_synth {
@@ -1458,10 +1471,20 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 } else if msg_lower.starts_with("!voice") {
-                                                    let valid_voices = valid_voices_for_model(&config.tts_model);
                                                     let arg = message.split_whitespace().nth(1).unwrap_or("");
                                                     let current = default_voice.read().unwrap().clone();
-                                                    match commands::voice_command(arg, &current, &valid_voices) {
+                                                    // Use registry if available for grouped display
+                                                    let (valid_voices, provider_groups, current_provider) = if let Some(ref reg) = tts_registry {
+                                                        (reg.valid_voices(), reg.voices_by_provider(), reg.provider_for_voice(&current).map(|s| s.to_string()))
+                                                    } else {
+                                                        (valid_voices_for_model(&config.tts_model), vec![], None)
+                                                    };
+                                                    let result = if !provider_groups.is_empty() {
+                                                        commands::voice_command_grouped(arg, &current, &valid_voices, &provider_groups, current_provider.as_deref())
+                                                    } else {
+                                                        commands::voice_command(arg, &current, &valid_voices)
+                                                    };
+                                                    match result {
                                                         commands::VoiceResult::Show(msg) | commands::VoiceResult::Invalid(msg) => {
                                                             let _ = ts3_msg_tx.try_send(OutgoingMessage::reply(msg, &reply_target, reply_sender_id));
                                                         }
@@ -1867,7 +1890,11 @@ async fn main() -> Result<()> {
                                                     }
                                                 } else if msg_lower.starts_with("!tts ") {
                                                     let raw_text = message[5..].trim();
-                                                    let valid_voices = valid_voices_for_model(&config.tts_model);
+                                                    let valid_voices = if let Some(ref reg) = tts_registry {
+                                                        reg.valid_voices()
+                                                    } else {
+                                                        valid_voices_for_model(&config.tts_model)
+                                                    };
                                                     let parsed = commands::tts_parse_options(raw_text, &valid_voices);
                                                     match commands::tts_validate(&parsed) {
                                                         commands::TtsValidation::Empty(msg) | commands::TtsValidation::TooLong(msg) => {
@@ -2365,6 +2392,21 @@ async fn main() -> Result<()> {
 
     // Spawn WebSocket server task (with TTS channel if enabled)
     let tts_tx_for_ws = if tts_enabled { Some(tts_tx.clone()) } else { None };
+
+    // Compute all valid voices for WS server (OpenAI + ElevenLabs if key is set)
+    let all_valid_voices_for_ws: Option<Vec<String>> = if tts_enabled {
+        let mut voices = valid_voices_for_model(&ws_config.tts_model);
+        if ws_config.elevenlabs_api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+            // Same curated list as in registry.rs
+            for name in &["adam", "antoni", "bella", "domi", "elli", "josh", "rachel", "sam"] {
+                voices.push(name.to_string());
+            }
+        }
+        voices.sort();
+        Some(voices)
+    } else {
+        None
+    };
     let tts_stop_flag_for_ws = tts_stop_flag.clone();
     let ws_handle = tokio::spawn(async move {
         let ws_params = websocket::WebSocketServerParams {
@@ -2377,6 +2419,7 @@ async fn main() -> Result<()> {
             default_voice: default_voice_for_ws,
             default_speed: default_speed_for_ws,
             chat_history: chat_history_for_ws,
+            all_valid_voices: all_valid_voices_for_ws,
         };
         if let Err(e) = websocket::run_server(ws_config, event_tx, ws_params).await {
             error!("WebSocket server error: {}", e);

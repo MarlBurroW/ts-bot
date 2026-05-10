@@ -37,6 +37,7 @@ hound = "3.5"
 
 # TTS - sync HTTP client for external TTS service (OpenAI-compatible API)
 ureq = { version = "2", features = ["json"] }
+minimp3 = "0.5"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }

@@ -58,6 +58,8 @@ struct AppState {
     chat_history: Option<SharedChatHistory>,
     /// TTS model name (for voice validation)
     tts_model: String,
+    /// All valid voice names (from registry if available)
+    all_valid_voices: Vec<String>,
 }
 
 /// Bundled parameters for `run_server`, avoiding a long argument list.
@@ -80,6 +82,8 @@ pub struct WebSocketServerParams {
     pub default_speed: Option<Arc<std::sync::RwLock<f32>>>,
     /// Shared chat history ring buffer
     pub chat_history: Option<SharedChatHistory>,
+    /// All valid voice names (from registry)
+    pub all_valid_voices: Option<Vec<String>>,
 }
 
 /// Helper: lock TS3 handle, build an OutCommand via closure, send it, and broadcast success/error.
@@ -143,6 +147,7 @@ pub async fn run_server(
         default_speed: params.default_speed,
         chat_history: params.chat_history,
         tts_model: config.tts_model.clone(),
+        all_valid_voices: params.all_valid_voices.unwrap_or_default(),
     };
 
     // Create Axum router with WebSocket endpoint
@@ -293,11 +298,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             ));
                         }
                         CommandAction::SetVoice { command_id, voice } => {
-                            let valid = crate::utils::valid_voices_for_model(&state.tts_model);
+                            let valid = if !state.all_valid_voices.is_empty() {
+                                state.all_valid_voices.clone()
+                            } else {
+                                crate::utils::valid_voices_for_model(&state.tts_model)
+                            };
                             if !valid.contains(&voice.to_lowercase()) {
                                 let _ = event_tx.send(WebSocketEvent::command_error(
                                     command_id,
-                                    format!("Invalid voice '{}' for model '{}'. Valid: {}", voice, state.tts_model, valid.join(", ")),
+                                    format!("Invalid voice '{}'. Valid: {}", voice, valid.join(", ")),
                                 ));
                             } else if let Some(ref dv) = default_voice {
                                 let voice_lower = voice.to_lowercase();
@@ -500,7 +509,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let _ = event_tx.send(WebSocketEvent::command_error(command_id, "TS3 not connected".to_string()));
                             }
                         }
-                        CommandAction::SendMessage { command_id, target, content, client_id } => {
+                        CommandAction::SendMessage { command_id, target, content, client_id, tts: speak_tts } => {
                             let mut handle_guard = ts3_handle.lock().await;
                             if let Some(ref mut sender) = *handle_guard {
                                 let msg_target = if target == "private" {
@@ -524,6 +533,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     Ok(_) => {
                                         info!("Sent {} message: {}", target, &content[..content.len().min(60)]);
                                         let _ = event_tx.send(WebSocketEvent::command_success(command_id, Some(format!("Message sent ({})", target))));
+
+                                        // Also speak via TTS if requested
+                                        if speak_tts {
+                                            if let Some(ref tx) = tts_tx {
+                                                info!("TTS for send_message: '{}'", &content[..content.len().min(60)]);
+                                                if let Err(e) = tx.send(TtsRequest { text: content, voice: None, speed: None }).await {
+                                                    warn!("Failed to queue TTS for send_message: {}", e);
+                                                }
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         let _ = event_tx.send(WebSocketEvent::command_error(command_id, format!("Send failed: {:?}", e)));

@@ -8,6 +8,8 @@ pub enum WebSocketCommand {
         target: String,
         content: String,
         recipient: Option<String>,
+        #[serde(default)]
+        tts: Option<bool>,
     },
     MoveChannel {
         command_id: Option<String>,

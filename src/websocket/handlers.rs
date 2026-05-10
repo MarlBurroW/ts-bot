@@ -14,8 +14,8 @@ pub enum CommandAction {
     GetServerState { command_id: Option<String> },
     /// Move bot to a different channel
     MoveChannel { command_id: Option<String>, channel_id: u64, password: Option<String> },
-    /// Send a text message (channel or private)
-    SendMessage { command_id: Option<String>, target: String, content: String, client_id: Option<u64> },
+    /// Send a text message (channel or private), optionally with TTS
+    SendMessage { command_id: Option<String>, target: String, content: String, client_id: Option<u64>, tts: bool },
     /// Poke a client
     PokeClient { command_id: Option<String>, client_id: u64, message: String },
     /// Kick a client from channel or server
@@ -119,7 +119,7 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
     }
 
     match command {
-        WebSocketCommand::SendMessage { command_id, target, content, recipient } => {
+        WebSocketCommand::SendMessage { command_id, target, content, recipient, tts } => {
             // Parse client_id from recipient field if target is "private"
             let client_id = if target == "private" {
                 recipient.as_ref().and_then(|r| r.parse::<u64>().ok())
@@ -128,7 +128,7 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
             };
             (
                 WebSocketEvent::command_success(command_id.clone(), Some("Sending message...".to_string())),
-                CommandAction::SendMessage { command_id, target, content, client_id },
+                CommandAction::SendMessage { command_id, target, content, client_id, tts: tts.unwrap_or(false) },
             )
         }
         WebSocketCommand::MoveChannel { command_id, channel_id, password } => (

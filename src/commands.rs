@@ -907,6 +907,32 @@ pub fn voice_command(arg: &str, current_voice: &str, valid_voices: &[String]) ->
     }
 }
 
+/// Enhanced voice command with provider grouping.
+/// `provider_groups`: Vec of (provider_name, voice_list), e.g. [("OpenAI", [...]), ("ElevenLabs", [...])]
+/// `provider_for_voice`: optional closure/fn to get provider name for current voice
+pub fn voice_command_grouped(
+    arg: &str,
+    current_voice: &str,
+    valid_voices: &[String],
+    provider_groups: &[(String, Vec<String>)],
+    current_provider: Option<&str>,
+) -> VoiceResult {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        let provider_str = current_provider.map(|p| format!(" ({})", p)).unwrap_or_default();
+        let mut lines = vec![format!(
+            "🎙️ Voix par défaut : [b]{}[/b]{}",
+            current_voice, provider_str
+        )];
+        for (provider, voices) in provider_groups {
+            lines.push(format!("{}: {}", provider, voices.join(", ")));
+        }
+        return VoiceResult::Show(lines.join("\n"));
+    }
+    // Delegate to base impl for set/invalid
+    voice_command(arg, current_voice, valid_voices)
+}
+
 /// Result of `!speed` command.
 #[derive(Debug, PartialEq)]
 pub enum SpeedResult {

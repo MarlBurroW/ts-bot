@@ -1,5 +1,7 @@
 pub mod http;
 pub mod playback;
+pub mod elevenlabs;
+pub mod registry;
 
 use anyhow::Result;
 
@@ -34,3 +36,5 @@ pub trait TtsSynthesizer: Send + Sync {
 
 pub use http::HttpTtsSynthesizer;
 pub use playback::AudioPlayer;
+pub use elevenlabs::ElevenLabsTtsSynthesizer;
+pub use registry::TtsRegistry;
