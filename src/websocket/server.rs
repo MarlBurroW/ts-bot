@@ -6,7 +6,7 @@ use axum::{
     },
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -18,7 +18,8 @@ use tracing::{error, info, warn};
 
 use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 
-use crate::audio::LiveAudioStream;
+use crate::audio::{LiveAudioStream, MicInState};
+use crate::audio::mic_in;
 use crate::models::{BotConfig, SharedChatHistory, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
@@ -67,6 +68,8 @@ struct AppState {
     all_valid_voices: Vec<String>,
     /// Live audio HTTP broadcaster (WebM/Opus mono mix)
     live_audio: Option<LiveAudioStream>,
+    /// Incoming microphone (push-to-talk) shared state
+    mic_in_state: MicInState,
 }
 
 /// Bundled parameters for `run_server`, avoiding a long argument list.
@@ -148,7 +151,7 @@ pub async fn run_server(
         ts3_handle: params.ts3_handle,
         bot_nickname: config.ts3_nickname.clone(),
         ts3_server: config.ts3_server.clone(),
-        tts_stop_flag: params.tts_stop_flag,
+        tts_stop_flag: params.tts_stop_flag.clone(),
         buffer_manager: params.buffer_manager,
         language_overrides: params.language_overrides,
         tts_volume: params.tts_volume,
@@ -158,6 +161,7 @@ pub async fn run_server(
         tts_model: config.tts_model.clone(),
         all_valid_voices: params.all_valid_voices.unwrap_or_default(),
         live_audio: params.live_audio,
+        mic_in_state: MicInState::new(params.tts_stop_flag.clone()),
     };
 
     // CORS: allow the mini-app (running in a browser, different origin from
@@ -165,13 +169,14 @@ pub async fn run_server(
     // tightened to a specific origin allowlist later.
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::HEAD, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::HEAD, Method::OPTIONS, Method::POST])
         .allow_headers(Any);
 
     // Create Axum router with WebSocket + live audio HTTP endpoints
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/audio/live", get(audio_live_handler))
+        .route("/audio/in", post(audio_in_handler))
         .layer(cors)
         .with_state(state);
 
@@ -198,15 +203,29 @@ async fn audio_live_handler(State(state): State<AppState>) -> Response {
     };
 
     let rx = live.subscribe();
-    info!("Live audio: new HTTP listener subscribed (total: {})", live.subscriber_count());
+    let init = live.init_segment();
+    info!(
+        "Live audio: new HTTP listener subscribed (total: {}, init_cached: {})",
+        live.subscriber_count(),
+        init.is_some()
+    );
 
-    let stream = BroadcastStream::new(rx).filter_map(|item| async move {
+    // Late subscribers (everyone after the first) need the WebM init segment
+    // in front of the first cluster they receive, otherwise the browser
+    // rejects the stream as "EBML header parsing failed". Prepend the cached
+    // init bytes (if any) before bridging to the live broadcast.
+    let init_stream = futures_util::stream::iter(match init {
+        Some(b) if !b.is_empty() => vec![Ok::<_, std::io::Error>(b)],
+        _ => Vec::new(),
+    });
+    let bcast_stream = BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
             Ok(chunk) => Some(Ok::<_, std::io::Error>(chunk)),
             // Lagged: skip the missed chunks but keep streaming.
             Err(_) => None,
         }
     });
+    let stream = init_stream.chain(bcast_stream);
 
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/webm"));
@@ -214,6 +233,22 @@ async fn audio_live_handler(State(state): State<AppState>) -> Response {
     headers.insert("X-Accel-Buffering", HeaderValue::from_static("no"));
 
     (headers, Body::from_stream(stream)).into_response()
+}
+
+/// HTTP POST /audio/in — accepts a chunked audio/webm body from the browser
+/// and forwards it (decoded → re-encoded as 20 ms Opus frames) to TS3 as
+/// AudioData::C2S. Symmetric to /audio/live. Used by the mini-app's
+/// push-to-talk button. Only one session is active at a time; a new request
+/// aborts any in-flight one. Also interrupts any ongoing TTS playback.
+async fn audio_in_handler(State(state): State<AppState>, body: Body) -> Response {
+    let stream = body.into_data_stream();
+    match mic_in::run_session(stream, state.mic_in_state.clone(), state.ts3_handle.clone()).await {
+        Ok(frames) => (StatusCode::OK, format!("{} frames sent", frames)).into_response(),
+        Err(e) => {
+            warn!("Mic-in handler error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("mic-in error: {}", e)).into_response()
+        }
+    }
 }
 
 /// Handle individual WebSocket connection

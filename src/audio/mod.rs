@@ -5,9 +5,11 @@ pub mod whisper;
 pub mod pipeline;
 pub mod whisper_api;
 pub mod stream;
+pub mod mic_in;
 
 pub use decoder::OpusDecoder;
 pub use encoder::OpusEncoder;
 pub use buffer::{AudioBuffer, SpeakerBufferManager};
 pub use pipeline::TranscriptionPipeline;
 pub use stream::LiveAudioStream;
+pub use mic_in::MicInState;
