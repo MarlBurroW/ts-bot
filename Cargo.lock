@@ -2803,6 +2803,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3048,6 +3049,7 @@ dependencies = [
  "audiopus",
  "axum",
  "base64 0.13.1",
+ "bytes",
  "chrono",
  "dotenvy",
  "envy",
@@ -3061,6 +3063,7 @@ dependencies = [
  "slog",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "tower 0.4.13",
  "tower-http",

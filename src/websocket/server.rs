@@ -1,19 +1,24 @@
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
-    response::Response,
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, sync::broadcast};
+use tokio_stream::wrappers::BroadcastStream;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 
 use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 
+use crate::audio::LiveAudioStream;
 use crate::models::{BotConfig, SharedChatHistory, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
 use crate::audio::buffer::SpeakerBufferManager;
@@ -60,6 +65,8 @@ struct AppState {
     tts_model: String,
     /// All valid voice names (from registry if available)
     all_valid_voices: Vec<String>,
+    /// Live audio HTTP broadcaster (WebM/Opus mono mix)
+    live_audio: Option<LiveAudioStream>,
 }
 
 /// Bundled parameters for `run_server`, avoiding a long argument list.
@@ -84,6 +91,8 @@ pub struct WebSocketServerParams {
     pub chat_history: Option<SharedChatHistory>,
     /// All valid voice names (from registry)
     pub all_valid_voices: Option<Vec<String>>,
+    /// Live audio HTTP broadcaster (WebM/Opus mono mix)
+    pub live_audio: Option<LiveAudioStream>,
 }
 
 /// Helper: lock TS3 handle, build an OutCommand via closure, send it, and broadcast success/error.
@@ -148,11 +157,22 @@ pub async fn run_server(
         chat_history: params.chat_history,
         tts_model: config.tts_model.clone(),
         all_valid_voices: params.all_valid_voices.unwrap_or_default(),
+        live_audio: params.live_audio,
     };
 
-    // Create Axum router with WebSocket endpoint
+    // CORS: allow the mini-app (running in a browser, different origin from
+    // the loopback bot) to hit `/audio/live`. Start permissive; can be
+    // tightened to a specific origin allowlist later.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::HEAD, Method::OPTIONS])
+        .allow_headers(Any);
+
+    // Create Axum router with WebSocket + live audio HTTP endpoints
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/audio/live", get(audio_live_handler))
+        .layer(cors)
         .with_state(state);
 
     info!("WebSocket server listening on {}", addr);
@@ -167,6 +187,33 @@ pub async fn run_server(
 /// WebSocket upgrade handler
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+/// HTTP GET /audio/live — streams the live WebM/Opus mono mix of all speakers
+/// currently audible to the bot. The encoding pipeline (ffmpeg) is only
+/// spawned while at least one listener is connected; idle CPU cost is zero.
+async fn audio_live_handler(State(state): State<AppState>) -> Response {
+    let Some(live) = state.live_audio.clone() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "live audio disabled").into_response();
+    };
+
+    let rx = live.subscribe();
+    info!("Live audio: new HTTP listener subscribed (total: {})", live.subscriber_count());
+
+    let stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(chunk) => Some(Ok::<_, std::io::Error>(chunk)),
+            // Lagged: skip the missed chunks but keep streaming.
+            Err(_) => None,
+        }
+    });
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/webm"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("X-Accel-Buffering", HeaderValue::from_static("no"));
+
+    (headers, Body::from_stream(stream)).into_response()
 }
 
 /// Handle individual WebSocket connection

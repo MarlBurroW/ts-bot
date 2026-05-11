@@ -123,6 +123,12 @@ async fn main() -> Result<()> {
     let buffer_manager = Arc::new(Mutex::new(SpeakerBufferManager::new()));
     let buffer_manager_for_ws = Some(buffer_manager.clone());
 
+    // Live audio HTTP broadcaster (WebM/Opus mono mix). Cheap to construct;
+    // the underlying ffmpeg process is only spawned on first HTTP listener.
+    let live_audio_stream = ts3_bot::audio::LiveAudioStream::new();
+    let live_audio_for_ts3 = live_audio_stream.clone();
+    let live_audio_for_ws = live_audio_stream.clone();
+
     // Per-user language overrides for Whisper transcription (UID -> ISO 639-1 code)
     // Persisted to data/language_prefs.json across restarts
     let language_overrides: Arc<Mutex<HashMap<String, String>>> =
@@ -2275,7 +2281,8 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 SyncStreamItem::Audio(audio_data) => {
-                                    if transcription_pipeline.is_some() || whisper_api.is_some() {
+                                    let live_has_listeners = live_audio_for_ts3.has_listeners();
+                                    if transcription_pipeline.is_some() || whisper_api.is_some() || live_has_listeners {
                                         let audio_inner = audio_data.data();
                                         let data = audio_inner.data();
 
@@ -2305,7 +2312,9 @@ async fn main() -> Result<()> {
                                             }
                                         }
 
-                                        // Decode Opus + resample via per-speaker decoder
+                                        // Decode Opus + resample via per-speaker decoder.
+                                        // While decoding, also tap the intermediate 48 kHz mono PCM
+                                        // and submit it to the live HTTP broadcaster (no-op if no listeners).
                                         let mut bm = buffer_manager.lock().await;
                                         let buffer = bm.get_or_create_buffer(
                                             speaker_id,
@@ -2315,7 +2324,14 @@ async fn main() -> Result<()> {
                                         // Update name in case cache was populated after buffer creation
                                         buffer.speaker_name = speaker_name;
                                         buffer.speaker_uid = speaker_uid;
-                                        if buffer.decode_and_push(codec_data) == 0 {
+                                        let live_ref = &live_audio_for_ts3;
+                                        let pushed = buffer.decode_and_push_capturing_48k(
+                                            codec_data,
+                                            &mut |pcm_48k| {
+                                                live_ref.submit(speaker_id, pcm_48k);
+                                            },
+                                        );
+                                        if pushed == 0 {
                                             drop(bm);
                                             continue;
                                         }
@@ -2424,6 +2440,7 @@ async fn main() -> Result<()> {
             default_speed: default_speed_for_ws,
             chat_history: chat_history_for_ws,
             all_valid_voices: all_valid_voices_for_ws,
+            live_audio: Some(live_audio_for_ws),
         };
         if let Err(e) = websocket::run_server(ws_config, event_tx, ws_params).await {
             error!("WebSocket server error: {}", e);

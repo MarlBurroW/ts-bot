@@ -56,11 +56,24 @@ impl AudioBuffer {
     /// resample to 16kHz, and push the resulting samples into the buffer.
     /// Returns the number of f32 samples pushed (0 if decode failed or empty).
     pub fn decode_and_push(&mut self, opus_data: &[u8]) -> usize {
+        self.decode_and_push_capturing_48k(opus_data, &mut |_| {})
+    }
+
+    /// Variant of [`decode_and_push`] that also exposes the intermediate
+    /// 48 kHz mono i16 PCM via a caller-supplied callback before resampling.
+    /// Used by the live HTTP audio stream to tap the mix at its native rate
+    /// without paying for a second decode.
+    pub fn decode_and_push_capturing_48k<F: FnMut(&[i16])>(
+        &mut self,
+        opus_data: &[u8],
+        capture: &mut F,
+    ) -> usize {
         match self.opus_decoder.decode(opus_data) {
             Ok(pcm) => {
                 if pcm.is_empty() {
                     return 0;
                 }
+                capture(&pcm);
                 let samples_f32 = OpusDecoder::resample_to_16khz(&pcm);
                 self.push_samples(&samples_f32);
                 samples_f32.len()
