@@ -137,6 +137,18 @@ pub enum WebSocketCommand {
     GetSpeed {
         command_id: Option<String>,
     },
+    /// Start recording per-speaker WAV files. Idempotent.
+    StartRecording {
+        command_id: Option<String>,
+    },
+    /// Stop recording and finalize every open WAV file. Idempotent.
+    StopRecording {
+        command_id: Option<String>,
+    },
+    /// Query whether recording is active and which files are currently open.
+    GetRecordingStatus {
+        command_id: Option<String>,
+    },
 }
 
 impl WebSocketCommand {
@@ -168,6 +180,9 @@ impl WebSocketCommand {
             Self::GetTimeout { command_id, .. } => command_id.as_deref(),
             Self::SetSpeed { command_id, .. } => command_id.as_deref(),
             Self::GetSpeed { command_id, .. } => command_id.as_deref(),
+            Self::StartRecording { command_id, .. } => command_id.as_deref(),
+            Self::StopRecording { command_id, .. } => command_id.as_deref(),
+            Self::GetRecordingStatus { command_id, .. } => command_id.as_deref(),
         }
     }
 

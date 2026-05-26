@@ -7,3 +7,4 @@
 .ts3_identity
 samples/
 tmp_*.wav
+/recordings/

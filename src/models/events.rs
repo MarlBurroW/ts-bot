@@ -68,6 +68,15 @@ pub enum WebSocketEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         new_channel_name: Option<String>,
     },
+    /// Emitted when recording is enabled via `start_recording`.
+    RecordingStarted {
+        output_dir: String,
+    },
+    /// Emitted when recording is disabled via `stop_recording` or
+    /// during bot shutdown. Lists every WAV file that was finalized.
+    RecordingStopped {
+        files: Vec<serde_json::Value>,
+    },
 }
 
 impl WebSocketEvent {

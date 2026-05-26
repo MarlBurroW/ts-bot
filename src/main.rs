@@ -129,6 +129,18 @@ async fn main() -> Result<()> {
     let live_audio_for_ts3 = live_audio_stream.clone();
     let live_audio_for_ws = live_audio_stream.clone();
 
+    // Per-speaker WAV recorder. Disabled by default; toggled via the
+    // start_recording / stop_recording WebSocket commands. The handle
+    // is cheap to clone — the audio hot path tap uses an atomic to
+    // short-circuit when recording is off, so it imposes no cost in
+    // the common case.
+    let recorder = ts3_bot::audio::RecorderHandle::new(
+        ts3_bot::audio::recorder::resolve_output_dir(Some(&config.recordings_dir)),
+    );
+    let recorder_for_ts3 = recorder.clone();
+    let recorder_for_ws = recorder.clone();
+    let recorder_for_shutdown = recorder.clone();
+
     // Per-user language overrides for Whisper transcription (UID -> ISO 639-1 code)
     // Persisted to data/language_prefs.json across restarts
     let language_overrides: Arc<Mutex<HashMap<String, String>>> =
@@ -2324,11 +2336,20 @@ async fn main() -> Result<()> {
                                         // Update name in case cache was populated after buffer creation
                                         buffer.speaker_name = speaker_name;
                                         buffer.speaker_uid = speaker_uid;
+                                        // Snapshot the name/UID before we re-borrow `buffer`
+                                        // mutably for decode — the closure needs owned strings.
+                                        let rec_name = buffer.speaker_name.clone();
+                                        let rec_uid = buffer.speaker_uid.clone();
                                         let live_ref = &live_audio_for_ts3;
+                                        let rec_ref = &recorder_for_ts3;
                                         let pushed = buffer.decode_and_push_capturing_48k(
                                             codec_data,
                                             &mut |pcm_48k| {
                                                 live_ref.submit(speaker_id, pcm_48k);
+                                                // Tap the same 48 kHz PCM into the per-speaker
+                                                // WAV recorder. Cheap no-op when recording is
+                                                // disabled (single AtomicBool::load).
+                                                rec_ref.append_pcm_48k(&rec_uid, &rec_name, pcm_48k);
                                             },
                                         );
                                         if pushed == 0 {
@@ -2441,6 +2462,7 @@ async fn main() -> Result<()> {
             chat_history: chat_history_for_ws,
             all_valid_voices: all_valid_voices_for_ws,
             live_audio: Some(live_audio_for_ws),
+            recorder: Some(recorder_for_ws),
         };
         if let Err(e) = websocket::run_server(ws_config, event_tx, ws_params).await {
             error!("WebSocket server error: {}", e);
@@ -2474,6 +2496,16 @@ async fn main() -> Result<()> {
             Ok(_) => info!("TS3 client shut down cleanly"),
             Err(_) => warn!("TS3 shutdown timed out after 5s, forcing exit"),
         }
+    }
+
+    // Finalize any open WAV recordings so their headers are valid and
+    // downstream players (ffmpeg, VLC, browsers) can read them.
+    if recorder_for_shutdown.is_active() {
+        let finalized = recorder_for_shutdown.stop();
+        info!(
+            "Recording finalized at shutdown: {} file(s)",
+            finalized.len()
+        );
     }
 
     info!("Goodbye!");

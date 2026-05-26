@@ -18,7 +18,7 @@ use tracing::{error, info, warn};
 
 use tsproto_packets::packets::{Direction, Flags, OutCommand, PacketType};
 
-use crate::audio::{LiveAudioStream, MicInState};
+use crate::audio::{LiveAudioStream, MicInState, RecorderHandle};
 use crate::audio::mic_in;
 use crate::models::{BotConfig, SharedChatHistory, WebSocketCommand, WebSocketEvent};
 use crate::websocket::handlers::{handle_command, CommandAction};
@@ -70,6 +70,8 @@ struct AppState {
     live_audio: Option<LiveAudioStream>,
     /// Incoming microphone (push-to-talk) shared state
     mic_in_state: MicInState,
+    /// Per-speaker WAV recorder (toggled via start/stop_recording)
+    recorder: Option<RecorderHandle>,
 }
 
 /// Bundled parameters for `run_server`, avoiding a long argument list.
@@ -96,6 +98,8 @@ pub struct WebSocketServerParams {
     pub all_valid_voices: Option<Vec<String>>,
     /// Live audio HTTP broadcaster (WebM/Opus mono mix)
     pub live_audio: Option<LiveAudioStream>,
+    /// Per-speaker WAV recorder
+    pub recorder: Option<RecorderHandle>,
 }
 
 /// Helper: lock TS3 handle, build an OutCommand via closure, send it, and broadcast success/error.
@@ -162,6 +166,7 @@ pub async fn run_server(
         all_valid_voices: params.all_valid_voices.unwrap_or_default(),
         live_audio: params.live_audio,
         mic_in_state: MicInState::new(params.tts_stop_flag.clone()),
+        recorder: params.recorder,
     };
 
     // CORS: allow the mini-app (running in a browser, different origin from
@@ -499,6 +504,87 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let _ = event_tx.send(WebSocketEvent::command_success(
                                     command_id,
                                     Some(serde_json::json!({ "timeout_ms": 2000 }).to_string()),
+                                ));
+                            }
+                        }
+                        CommandAction::StartRecording { command_id } => {
+                            if let Some(ref rec) = state.recorder {
+                                match rec.start() {
+                                    Ok(true) => {
+                                        let dir = rec.output_dir().to_string_lossy().to_string();
+                                        let _ = event_tx.send(WebSocketEvent::RecordingStarted {
+                                            output_dir: dir.clone(),
+                                        });
+                                        let _ = event_tx.send(WebSocketEvent::command_success(
+                                            command_id,
+                                            Some(format!("Recording started → {}", dir)),
+                                        ));
+                                    }
+                                    Ok(false) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_success(
+                                            command_id,
+                                            Some("Recording already active".to_string()),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WebSocketEvent::command_error(
+                                            command_id,
+                                            format!("Failed to start recording: {}", e),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "Recorder not available".to_string(),
+                                ));
+                            }
+                        }
+                        CommandAction::StopRecording { command_id } => {
+                            if let Some(ref rec) = state.recorder {
+                                let was_active = rec.is_active();
+                                let finalized = rec.stop();
+                                let files: Vec<serde_json::Value> = finalized
+                                    .iter()
+                                    .map(|f| serde_json::json!({
+                                        "uid": f.uid,
+                                        "speaker_name": f.speaker_name,
+                                        "path": f.path,
+                                        "duration_ms": f.duration_ms,
+                                    }))
+                                    .collect();
+                                if was_active {
+                                    let _ = event_tx.send(WebSocketEvent::RecordingStopped {
+                                        files: files.clone(),
+                                    });
+                                }
+                                let _ = event_tx.send(WebSocketEvent::command_success(
+                                    command_id,
+                                    Some(serde_json::json!({
+                                        "stopped": was_active,
+                                        "files": files,
+                                    }).to_string()),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_error(
+                                    command_id,
+                                    "Recorder not available".to_string(),
+                                ));
+                            }
+                        }
+                        CommandAction::GetRecordingStatus { command_id } => {
+                            if let Some(ref rec) = state.recorder {
+                                let _ = event_tx.send(WebSocketEvent::command_success_with_data(
+                                    command_id,
+                                    rec.status_json(),
+                                ));
+                            } else {
+                                let _ = event_tx.send(WebSocketEvent::command_success_with_data(
+                                    command_id,
+                                    serde_json::json!({
+                                        "active": false,
+                                        "files": [],
+                                    }),
                                 ));
                             }
                         }

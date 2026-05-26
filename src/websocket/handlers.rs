@@ -107,6 +107,18 @@ pub enum CommandAction {
     GetSpeed {
         command_id: Option<String>,
     },
+    /// Start per-speaker WAV recording
+    StartRecording {
+        command_id: Option<String>,
+    },
+    /// Stop per-speaker WAV recording and finalize files
+    StopRecording {
+        command_id: Option<String>,
+    },
+    /// Get current recording state and open files
+    GetRecordingStatus {
+        command_id: Option<String>,
+    },
 }
 
 /// Handle incoming WebSocket command
@@ -255,6 +267,18 @@ pub fn handle_command(command: WebSocketCommand) -> (WebSocketEvent, CommandActi
         WebSocketCommand::GetSpeed { command_id } => (
             WebSocketEvent::command_success(command_id.clone(), None),
             CommandAction::GetSpeed { command_id },
+        ),
+        WebSocketCommand::StartRecording { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Starting recording...".to_string())),
+            CommandAction::StartRecording { command_id },
+        ),
+        WebSocketCommand::StopRecording { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), Some("Stopping recording...".to_string())),
+            CommandAction::StopRecording { command_id },
+        ),
+        WebSocketCommand::GetRecordingStatus { command_id } => (
+            WebSocketEvent::command_success(command_id.clone(), None),
+            CommandAction::GetRecordingStatus { command_id },
         ),
     }
 }

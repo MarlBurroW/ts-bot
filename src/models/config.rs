@@ -45,6 +45,12 @@ pub struct BotConfig {
     pub elevenlabs_api_key: Option<String>,
     #[serde(rename = "elevenlabs_model", default = "default_elevenlabs_model")]
     pub elevenlabs_model: String,
+
+    /// Output directory for per-speaker WAV recordings.
+    /// Recording itself is OFF by default and toggled via the
+    /// `start_recording` / `stop_recording` WebSocket commands.
+    #[serde(rename = "recordings_dir", default = "default_recordings_dir")]
+    pub recordings_dir: String,
 }
 
 fn default_ws_host() -> String { "127.0.0.1".to_string() }
@@ -57,6 +63,7 @@ fn default_tts_api_url() -> String { "https://api.openai.com/v1/audio/speech".to
 fn default_tts_model() -> String { "tts-1".to_string() }
 fn default_tts_voice() -> String { "nova".to_string() }
 fn default_elevenlabs_model() -> String { "eleven_multilingual_v2".to_string() }
+fn default_recordings_dir() -> String { "recordings".to_string() }
 
 impl BotConfig {
     pub fn from_env() -> Result<Self> {
@@ -96,6 +103,7 @@ impl fmt::Debug for BotConfig {
             .field("tts_voice", &self.tts_voice)
             .field("elevenlabs_api_key", &redact(&self.elevenlabs_api_key))
             .field("elevenlabs_model", &self.elevenlabs_model)
+            .field("recordings_dir", &self.recordings_dir)
             .finish()
     }
 }
