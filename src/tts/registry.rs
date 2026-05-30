@@ -24,8 +24,28 @@ pub struct TtsRegistry {
     elevenlabs_voices: Vec<String>,
 }
 
-/// Fetch voices from ElevenLabs API, filtered to FR voices + cloned voices.
+/// Build a clean, command-friendly handle from an ElevenLabs voice name:
+/// take the first word, lowercase it, strip non-alphanumeric characters.
+fn friendly_voice_name(name: &str) -> String {
+    name.split(|c: char| c == ' ' || c == '-' || c == '_' || c == '´')
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+}
+
+/// Fetch ALL voices available on the configured ElevenLabs account.
+///
+/// Hits `GET /v1/voices` and returns every voice the account exposes
+/// (premade, professional, cloned, generated...), regardless of language.
 /// Returns Vec<(friendly_name, voice_id)>.
+///
+/// Friendly names are derived from the first word of the voice name. When
+/// two voices collapse to the same handle (e.g. several "Nicolas" or
+/// "Sebastien"), later ones get a numeric suffix (`nicolas`, `nicolas2`,
+/// `nicolas3`) so no voice is ever silently dropped.
 pub fn fetch_elevenlabs_voices(api_key: &str) -> Vec<(String, String)> {
     let client = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
@@ -52,46 +72,41 @@ pub fn fetch_elevenlabs_voices(api_key: &str) -> Vec<(String, String)> {
         }
     };
 
-    let mut voices: Vec<(String, String)> = Vec::new();
+    let mut raw: Vec<(String, String)> = Vec::new();
     if let Some(arr) = body.get("voices").and_then(|v| v.as_array()) {
         for voice in arr {
             let voice_id = voice.get("voice_id").and_then(|v| v.as_str()).unwrap_or_default();
             let name = voice.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-            let category = voice.get("category").and_then(|v| v.as_str()).unwrap_or_default();
-            let labels = voice.get("labels").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
-            let language = labels.get("language").and_then(|v| v.as_str()).unwrap_or_default();
 
             if voice_id.is_empty() || name.is_empty() {
                 continue;
             }
 
-            // Include: cloned voices + voices with French language
-            let is_french = language.starts_with("fr");
-            let is_cloned = category == "cloned";
-
-            if is_french || is_cloned {
-                // Build a clean friendly name: take first word, lowercase, strip non-alphanumeric
-                let friendly = name
-                    .split(|c: char| c == ' ' || c == '-' || c == '´')
-                    .next()
-                    .unwrap_or(name)
-                    .to_lowercase()
-                    .chars()
-                    .filter(|c| c.is_alphanumeric())
-                    .collect::<String>();
-
-                if !friendly.is_empty() {
-                    voices.push((friendly, voice_id.to_string()));
-                }
+            let friendly = friendly_voice_name(name);
+            if !friendly.is_empty() {
+                raw.push((friendly, voice_id.to_string()));
             }
         }
     }
 
-    voices.sort_by(|a, b| a.0.cmp(&b.0));
-    // Deduplicate by friendly name (keep first)
-    voices.dedup_by(|a, b| a.0 == b.0);
+    // Sort alphabetically, then disambiguate duplicate handles with a numeric
+    // suffix so every distinct voice_id keeps a unique, addressable name.
+    raw.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-    info!("Fetched {} ElevenLabs voices (FR + clones)", voices.len());
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut voices: Vec<(String, String)> = Vec::with_capacity(raw.len());
+    for (base, id) in raw {
+        let count = seen.entry(base.clone()).or_insert(0);
+        *count += 1;
+        let unique = if *count == 1 {
+            base.clone()
+        } else {
+            format!("{}{}", base, count)
+        };
+        voices.push((unique, id));
+    }
+
+    info!("Fetched {} ElevenLabs voices (full account list)", voices.len());
     for (name, id) in &voices {
         info!("  ElevenLabs voice: {} → {}", name, id);
     }
